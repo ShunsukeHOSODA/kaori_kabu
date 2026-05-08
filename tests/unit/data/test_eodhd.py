@@ -263,6 +263,73 @@ class TestGetFundamentals:
         assert result["General"]["Code"] == "AAPL"
         assert result["Highlights"]["EnterpriseValue"] == 3_600_000_000_000
 
+    def test_キャッシュヒット時_API呼び出しなし_同じdict返却(
+        self, tmp_path: Path, mock_fundamentals_response: MagicMock
+    ) -> None:
+        """1 回目で書いた JSON キャッシュを 2 回目に読む。
+        2 回目は HTTP リクエストを発行しないこと（CLAUDE.md §9.2 ファンダ TTL 7 日）。
+        """
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = mock_fundamentals_response
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        first = client.get_fundamentals("AAPL")
+        second = client.get_fundamentals("AAPL")
+
+        # 2 回目はキャッシュヒットで API 呼び出し総数は 1 のまま
+        assert http_client.get.call_count == 1
+        assert first["Highlights"]["EnterpriseValue"] == (
+            second["Highlights"]["EnterpriseValue"]
+        )
+
+    def test_TTL切れ時_API再呼び出し(
+        self, tmp_path: Path, mock_fundamentals_response: MagicMock
+    ) -> None:
+        """TTL 0 秒で呼び出すと、保存済みでも fresh ではないため再取得される。"""
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = mock_fundamentals_response
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        client.get_fundamentals("AAPL", cache_ttl_sec=0)
+        client.get_fundamentals("AAPL", cache_ttl_sec=0)
+
+        # TTL 0 → 毎回 fresh でない → 毎回再取得
+        assert http_client.get.call_count == 2
+
+    def test_キャッシュファイルがJSON_拡張子で保存される(
+        self, tmp_path: Path, mock_fundamentals_response: MagicMock
+    ) -> None:
+        """fundamentals は dict なので Parquet ではなく JSON として保存される。"""
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = mock_fundamentals_response
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        client.get_fundamentals("AAPL")
+
+        json_files = list((tmp_path / "EODHD").glob("fundamentals_AAPL*.json"))
+        assert len(json_files) == 1
+
 
 @pytest.mark.unit
 class TestExtractMagicFormulaRow:
@@ -346,6 +413,60 @@ class TestBuildScreenerUniverse:
             "enterprise_value",
         }
         assert list(df["ticker"]) == ["AAPL", "MSFT", "GOOGL"]
+
+    def test_sector除外フィルタ(
+        self, tmp_path: Path, mock_fundamentals_response: MagicMock
+    ) -> None:
+        """``excluded_sectors`` にマッチする銘柄は除外される。
+
+        モックレスポンスは Sector="Technology" 固定。
+        ``excluded_sectors=("Technology",)`` で全銘柄が除外される。
+        """
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = mock_fundamentals_response
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        df = client.build_screener_universe(
+            ["AAPL", "MSFT"], excluded_sectors=("Technology",)
+        )
+
+        assert len(df) == 0
+
+    def test_最低時価総額フィルタ(
+        self, tmp_path: Path, mock_fundamentals_response: MagicMock
+    ) -> None:
+        """``min_market_cap_usd`` 未満の銘柄は除外される。
+
+        モックの market_cap = 3.5e12 USD。閾値 1e13 では全銘柄除外。
+        """
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = mock_fundamentals_response
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        df = client.build_screener_universe(
+            ["AAPL", "MSFT"], min_market_cap_usd=Decimal("10000000000000")
+        )
+        assert len(df) == 0
+
+        # 同モックの 3.5e12 を下回る閾値ならパス
+        df_pass = client.build_screener_universe(
+            ["AAPL", "MSFT"], min_market_cap_usd=Decimal("100000000")
+        )
+        assert len(df_pass) == 2
 
 
 @pytest.mark.unit

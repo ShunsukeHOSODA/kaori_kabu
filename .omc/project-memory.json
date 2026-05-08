@@ -1,0 +1,346 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1778255813655,
+  "projectRoot": "/Users/kaori/Desktop/kaori_kabu",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "export PATH=\"$HOME/.local/bin:$PATH\" && grep -n \"excluded_sectors_list\" src/config/settings.py && echo \"---FULL TESTS---\" && uv run pytest --no-cov -m \"not slow\" -q 2>&1 | tail -20 && echo \"---PY COMPILE---\" && uv run python -c \"import ast; ast.parse(open('src/dashboard/pages/02_screener.py').read()); print('OK')\"",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": "snake_case",
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts",
+      "src",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "data": {
+      "path": "data",
+      "purpose": "Data files",
+      "fileCount": 0,
+      "lastAccessed": 1778255813632,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 15,
+      "lastAccessed": 1778255813635,
+      "keyFiles": [
+        "README.md",
+        "accessibility.md",
+        "architecture.md",
+        "cost-budget.md",
+        "development-guidelines.md"
+      ]
+    },
+    "notebooks": {
+      "path": "notebooks",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778255813636,
+      "keyFiles": []
+    },
+    "reports": {
+      "path": "reports",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1778255813636,
+      "keyFiles": []
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 5,
+      "lastAccessed": 1778255813637,
+      "keyFiles": [
+        "README.md",
+        "pre-deploy-check.sh.example",
+        "setup.sh",
+        "setup.sh.example",
+        "test-all.sh.example"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 2,
+      "lastAccessed": 1778255813637,
+      "keyFiles": [
+        "__init__.py",
+        "cli.py"
+      ]
+    },
+    "steering-example": {
+      "path": "steering-example",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1778255813637,
+      "keyFiles": [
+        "README.md",
+        "design.md",
+        "requirements.md",
+        "tasklist.md"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 1,
+      "lastAccessed": 1778255813638,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    },
+    "src/config": {
+      "path": "src/config",
+      "purpose": "Configuration files",
+      "fileCount": 2,
+      "lastAccessed": 1778255813639,
+      "keyFiles": [
+        "__init__.py",
+        "settings.py"
+      ]
+    },
+    "src/data": {
+      "path": "src/data",
+      "purpose": "Data files",
+      "fileCount": 1,
+      "lastAccessed": 1778255813639,
+      "keyFiles": [
+        "__init__.py"
+      ]
+    },
+    "tests/fixtures": {
+      "path": "tests/fixtures",
+      "purpose": "Test fixtures",
+      "fileCount": 0,
+      "lastAccessed": 1778255813640,
+      "keyFiles": []
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/data/eodhd.py",
+      "accessCount": 11,
+      "lastAccessed": 1778268733998,
+      "type": "file"
+    },
+    {
+      "path": "src/analysis/magic_formula.py",
+      "accessCount": 7,
+      "lastAccessed": 1778268047217,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/data/test_eodhd.py",
+      "accessCount": 7,
+      "lastAccessed": 1778268718223,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/analysis/test_magic_formula.py",
+      "accessCount": 6,
+      "lastAccessed": 1778268074985,
+      "type": "file"
+    },
+    {
+      "path": "src/data/cache.py",
+      "accessCount": 4,
+      "lastAccessed": 1778268528954,
+      "type": "file"
+    },
+    {
+      "path": "src/dashboard/pages/02_screener.py",
+      "accessCount": 4,
+      "lastAccessed": 1778268878796,
+      "type": "file"
+    },
+    {
+      "path": ".env",
+      "accessCount": 3,
+      "lastAccessed": 1778257648371,
+      "type": "file"
+    },
+    {
+      "path": "CLAUDE.md",
+      "accessCount": 2,
+      "lastAccessed": 1778257103424,
+      "type": "file"
+    },
+    {
+      "path": "src/dashboard/pages/01_home.py",
+      "accessCount": 2,
+      "lastAccessed": 1778266141954,
+      "type": "file"
+    },
+    {
+      "path": "src/portfolio/valuation.py",
+      "accessCount": 2,
+      "lastAccessed": 1778266182643,
+      "type": "file"
+    },
+    {
+      "path": "src/strategies/kelly.py",
+      "accessCount": 2,
+      "lastAccessed": 1778268074616,
+      "type": "file"
+    },
+    {
+      "path": ".steering/20260509-initial-setup/handoff.md",
+      "accessCount": 1,
+      "lastAccessed": 1778255841382,
+      "type": "file"
+    },
+    {
+      "path": ".steering/20260509-initial-setup/tasklist.md",
+      "accessCount": 1,
+      "lastAccessed": 1778255841621,
+      "type": "file"
+    },
+    {
+      "path": ".env.example",
+      "accessCount": 1,
+      "lastAccessed": 1778256535938,
+      "type": "file"
+    },
+    {
+      "path": "src/config/settings.py",
+      "accessCount": 1,
+      "lastAccessed": 1778257112429,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/analysis/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1778260240102,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/data/__init__.py",
+      "accessCount": 1,
+      "lastAccessed": 1778261829325,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/data/test_provenance.py",
+      "accessCount": 1,
+      "lastAccessed": 1778261838897,
+      "type": "file"
+    },
+    {
+      "path": "src/data/_provenance.py",
+      "accessCount": 1,
+      "lastAccessed": 1778261914697,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/data/test_cache.py",
+      "accessCount": 1,
+      "lastAccessed": 1778262024464,
+      "type": "file"
+    },
+    {
+      "path": "tests/conftest.py",
+      "accessCount": 1,
+      "lastAccessed": 1778262487306,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/portfolio/test_holdings.py",
+      "accessCount": 1,
+      "lastAccessed": 1778265545942,
+      "type": "file"
+    },
+    {
+      "path": "src/portfolio/holdings.py",
+      "accessCount": 1,
+      "lastAccessed": 1778265653842,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/portfolio/test_decision_log.py",
+      "accessCount": 1,
+      "lastAccessed": 1778265750755,
+      "type": "file"
+    },
+    {
+      "path": "src/portfolio/decision_log.py",
+      "accessCount": 1,
+      "lastAccessed": 1778265813883,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/portfolio/test_valuation.py",
+      "accessCount": 1,
+      "lastAccessed": 1778265915339,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/strategies/test_atr_stop.py",
+      "accessCount": 1,
+      "lastAccessed": 1778266513119,
+      "type": "file"
+    },
+    {
+      "path": "src/strategies/atr_stop.py",
+      "accessCount": 1,
+      "lastAccessed": 1778267022065,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/strategies/test_kelly.py",
+      "accessCount": 1,
+      "lastAccessed": 1778267413327,
+      "type": "file"
+    },
+    {
+      "path": "tests/unit/analysis/test_regime.py",
+      "accessCount": 1,
+      "lastAccessed": 1778268210883,
+      "type": "file"
+    },
+    {
+      "path": "src/analysis/regime.py",
+      "accessCount": 1,
+      "lastAccessed": 1778268384757,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

@@ -20,6 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 EODHD_BASE_URL = "https://eodhd.com/api"
 CACHE_PROVIDER = "EODHD"
 DEFAULT_CACHE_TTL_SEC = 86_400  # 24h
+DEFAULT_FUNDAMENTAL_CACHE_TTL_SEC = 604_800  # 7d (CLAUDE.md §9.2)
 
 
 class EODHDAPIError(Exception):
@@ -77,6 +79,21 @@ def _params_hash(params: dict[str, Any]) -> str:
 def _make_default_http_client() -> httpx.Client:
     """既定の httpx.Client（タイムアウト 30 秒、リダイレクト追従）。"""
     return httpx.Client(timeout=30.0, follow_redirects=True)
+
+
+def _read_fresh_json(path: Path, ttl_sec: int) -> dict[str, Any] | None:
+    """JSON ファイルを TTL 内なら読み込み、それ以外は ``None``。
+
+    ``ttl_sec`` が 0 の場合は常に stale（強制再取得）。
+    """
+    if not path.exists():
+        return None
+    if ttl_sec <= 0:
+        return None
+    age = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
+    if age > ttl_sec:
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -159,7 +176,11 @@ class EODHDClient:
         return df
 
     def get_fundamentals(
-        self, ticker: str, *, exchange: str = "US"
+        self,
+        ticker: str,
+        *,
+        exchange: str = "US",
+        cache_ttl_sec: int = DEFAULT_FUNDAMENTAL_CACHE_TTL_SEC,
     ) -> dict[str, Any]:
         """ファンダメンタルデータ取得（生 JSON dict）。
 
@@ -167,10 +188,22 @@ class EODHDClient:
         dict をそのまま返す。Magic Formula 入力に必要なフィールド抽出は
         :func:`extract_magic_formula_row` を使う。
 
-        Note:
-            現状はキャッシュなし。ファンダは月次更新が一般的なので、
-            上位レイヤーで明示的にキャッシュ管理する想定。
+        TTL 7 日のファイルキャッシュを介在させる（CLAUDE.md §9.2）。
+        DataFrame ではなく dict のため :class:`ParquetCache` ではなく
+        ``{cache.base_dir}/EODHD/fundamentals_{ticker}_{exchange}.json``
+        に JSON で保存する。
+
+        Args:
+            ticker: ティッカーシンボル
+            exchange: 取引所コード（デフォルト ``US``）
+            cache_ttl_sec: キャッシュ TTL（デフォルト 7 日）。
+                ``0`` を渡すと毎回再取得。
         """
+        cache_path = self._fundamentals_cache_path(ticker, exchange)
+        cached = _read_fresh_json(cache_path, cache_ttl_sec)
+        if cached is not None:
+            return cached
+
         symbol = f"{ticker}.{exchange}"
         endpoint = f"/fundamentals/{symbol}"
         response = self.http_client.get(
@@ -178,29 +211,58 @@ class EODHDClient:
             params={"api_token": self.api_key},
         )
         _check_response(response, endpoint=endpoint)
-        return response.json()
+        payload = response.json()
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        return payload
+
+    def _fundamentals_cache_path(self, ticker: str, exchange: str) -> Path:
+        """fundamentals JSON キャッシュのパスを構築。
+
+        ``{cache.base_dir}/EODHD/fundamentals_{ticker}_{exchange}.json``。
+        ParquetCache と同じ provider ディレクトリ配下に同居させ、
+        ストレージ管理を一元化する。
+        """
+        provider_dir = self.cache.base_dir / CACHE_PROVIDER
+        return provider_dir / f"fundamentals_{ticker}_{exchange}.json"
 
     def build_screener_universe(
         self,
         tickers: list[str],
         *,
         exchange: str = "US",
+        excluded_sectors: tuple[str, ...] = (),
+        min_market_cap_usd: Decimal | None = None,
     ) -> pd.DataFrame:
         """複数銘柄のファンダから Magic Formula 入力 DataFrame を構築。
 
         各銘柄の :meth:`get_fundamentals` を順次呼び出し、必要フィールドが
         揃う行だけ集める。欠損・取得失敗銘柄はスキップされる。
 
+        フィルタ:
+            - ``excluded_sectors``: 列挙されたセクターの銘柄は除外（例:
+              ``("Financials", "Utilities", "Energy")`` — Magic Formula は
+              金融・公益・エネルギー除外が定石）
+            - ``min_market_cap_usd``: 時価総額が閾値未満なら除外。流動性が
+              低すぎる小型株を排除して取引可能性を担保する。
+
         Args:
             tickers: 取得対象のティッカーリスト
             exchange: 取引所コード（デフォルト ``US``）
+            excluded_sectors: 除外セクター名タプル（大小文字一致）
+            min_market_cap_usd: 最低時価総額（USD、Decimal）。``None`` なら
+                フィルタ無し。
 
         Returns:
             ``ticker``/``ebit``/``net_working_capital``/``net_fixed_assets``/
             ``enterprise_value``/``market_cap``/``sector``/``industry``
-            カラムを持つ DataFrame。
+            カラムを持つ DataFrame（フィルタ後）。
         """
         rows: list[dict[str, Any]] = []
+        excluded_set = set(excluded_sectors)
         for ticker in tickers:
             try:
                 fund = self.get_fundamentals(ticker, exchange=exchange)
@@ -208,8 +270,15 @@ class EODHDClient:
                 logger.warning("fundamentals 取得失敗: %s (%s)", ticker, exc)
                 continue
             row = extract_magic_formula_row(fund, ticker=ticker)
-            if row is not None:
-                rows.append(row)
+            if row is None:
+                continue
+            if row.get("sector") in excluded_set:
+                continue
+            if min_market_cap_usd is not None:
+                cap = row.get("market_cap")
+                if cap is None or cap < min_market_cap_usd:
+                    continue
+            rows.append(row)
         return pd.DataFrame(rows)
 
 
