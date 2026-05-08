@@ -12,8 +12,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """プロジェクト全体の設定。pydantic-settings で .env を自動ロード。"""
 
+    # env_file は順に読まれ、後勝ち。グローバル ~/.claude/.env を先に読み、
+    # プロジェクトローカル .env で個別にオーバーライドできる構造（Tavily/Exa
+    # キーをグローバルに置いて全プロジェクトで共有するパターンに対応）。
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(str(Path.home() / ".claude" / ".env"), ".env"),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
@@ -39,6 +42,17 @@ class Settings(BaseSettings):
     polymarket_base_url: str = Field(
         default="https://gamma-api.polymarket.com",
         alias="POLYMARKET_BASE_URL",
+    )
+
+    # ===== ニュース取得 (Tavily / Exa) =====
+    tavily_api_key: str = Field(default="", alias="TAVILY_API_KEY")
+    exa_api_key: str = Field(default="", alias="EXA_API_KEY")
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    rate_limit_tavily: int = Field(default=100, alias="RATE_LIMIT_TAVILY")
+    rate_limit_exa: int = Field(default=60, alias="RATE_LIMIT_EXA")
+    news_default_days: int = Field(default=30, alias="NEWS_DEFAULT_DAYS")
+    news_default_max_results: int = Field(
+        default=10, alias="NEWS_DEFAULT_MAX_RESULTS"
     )
 
     # ===== キャッシュ・ストレージ =====
