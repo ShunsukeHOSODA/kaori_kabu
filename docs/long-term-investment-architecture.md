@@ -258,7 +258,90 @@ src/analysis/
 
 ---
 
-## 12. 残課題（オープン）
+## 12. レビュー反映（2026-05-09 kabu-analyst 独立レビュー）
+
+### 12.1 致命的抜けへの対応
+
+| 抜け | 反映 |
+|---|---|
+| 無形資産・R&D 効率（GAFAM 過小評価リスク） | **Q サブスコアに R&D/Sales、無形資産/総資産、Goodwill 健全性を追加**（Phase 3.2） |
+| Altman Z は 1968 年製造業前提で IT 企業誤発火 | **Merton Distance-to-Default（DD）併記**、警告は「Z < 1.8 OR DD < 1σ」の OR 条件に変更 |
+| Buffett 型 M=0 は教科書的すぎ（Frazzini-Pedersen 2018 "Buffett's Alpha"） | **Buffett 型 M=5 に修正**、Falling Knife 警告（12m return < -20% かつ Q 高）を新設 |
+| 日本株固有制度の漏れ | 特別損失多発、政策保有株縮減、PBR 1 倍割れ改革、社外取締役比率/女性役員比率を §4 に追加（Phase 3.2） |
+
+### 12.2 即実装改善（Phase 3.1 に反映）
+
+1. **Beneish M を Risk サブスコアへ移動**、Quality は Sloan 1996 Accruals Ratio + FCF/Net Income + Gross Margin 安定性で再構成
+2. **配当性向警告を GICS セクター別動的閾値**: 各セクター中央値 ± 1σ で警告を出す（REIT は 90%超が正常、IT は 30%超で警告）
+3. **Phase 3.1 優先順位入れ替え**: 旧優先 = Altman Z + PEG + 配当 4 軸 + Buyback → **新優先 = FCF Yield + Net Debt/EBITDA + 配当 4 軸 + Buyback yield + Altman Z + PEG（売上 CAGR ベース PSG 併用）**
+   - 理由: FCF Yield は「真の株主リターンの母数」、Net Debt/EBITDA は破綻より先に減配を予測する Dalio 軸
+
+→ §7 Phase 3.1 のスコープを上記に差し替え。実装は本セッションで TDD 着手。
+
+### 12.3 architect レビュー反映（モジュール構造）
+
+| 致命的問題 | 反映 |
+|---|---|
+| 単一ファイル 800 行超過 | **`src/analysis/composite/` パッケージ化** に変更 |
+| 循環依存リスク | composite → kelly / regime / news の **単方向契約**を明文化、`composite/README.md` に依存方向図 |
+
+**新しいパッケージ構造**:
+```
+src/analysis/composite/
+├── __init__.py              # 公開 API（CompositeScore, compute_composite_score, INVESTOR_PRESETS）
+├── README.md                # 依存方向 + Decimal/float 境界の契約
+├── subscores/
+│   ├── __init__.py
+│   ├── income.py            # 配当 4 軸 + Buyback yield + FCF yield
+│   ├── risk.py              # Altman Z + Beneish M + Net Debt/EBITDA
+│   ├── quality.py           # ROE/ROA（暫定）+ Accruals Ratio（Phase 3.2）
+│   ├── value.py             # EY (既存 magic_formula から取り込む) + PEG
+│   ├── growth.py            # 売上/EPS/配当 5y CAGR（Phase 3.1b）
+│   ├── momentum.py          # 12m/1m return（Phase 3.1b）
+│   ├── conviction.py        # 13F + インサイダー（Phase 3.2、暫定 0）
+│   └── sentiment.py         # 既存 SentimentResult を 0-100 マッピング
+├── presets.py               # 重み定数のみ（INVESTOR_PRESETS）
+├── warnings.py              # 独立判定、GICS セクター別動的閾値
+└── aggregator.py            # compute_composite_score 主関数
+```
+
+**Decimal/float 境界の契約**（`composite/README.md` に転記）:
+- **Decimal**: 金額（配当・優待・株価・時価総額）、税引後利回り正規化の入出力
+- **float**: 比率、サブスコア（0-100）、z-score、最終 Composite Score
+
+**キャッシュ方針**: composite 層はキャッシュ持たない。EODHD/13F/Sentiment の各データレイヤキャッシュを使い、`df.attrs` を `propagate_attrs` で伝播するだけ（CLAUDE.md §9.8.1）。
+
+### 12.4 planner レビュー反映（実装段階）
+
+**Phase 3.1 を 2 commit に分割**:
+
+#### Phase 3.1a（最優先、本セッション内）
+ユーザー本来の動機「長期保有で配当が効く」を満たす最小スライス:
+- subscores/income.py（配当 4 軸 + Buyback yield + FCF yield）
+- subscores/risk.py（Altman Z + Beneish M + Net Debt/EBITDA）
+- subscores/quality.py（ROE/ROA 暫定）
+- subscores/sentiment.py（既存 SentimentResult を 0-100 マッピング）
+- presets.py（**「Buffett 型(暫定)」**「配当再投資型」の 2 プリセットのみ）
+  - 13F 未統合のため C 重みは 0 に再配分
+  - クローニング型・テール回避型は UI 非表示
+- warnings.py（4 警告 + Falling Knife）
+- aggregator.py（compute_composite_score）
+- screener UI 統合（最小限）
+
+#### Phase 3.1b（次セッション）
+- subscores/growth.py（PEG + 売上/EPS/配当 5y CAGR）
+- subscores/value.py（既存 magic_formula 取り込み）
+- subscores/momentum.py
+- Lynch 型 / 逆張り型プリセット追加
+- レーダーチャート UI
+
+**「Buffett 型(暫定)」表示規約**: ROIC/WACC 不在のため Q サブスコアは ROE/ROA 代理。Streamlit で "Buffett 型(暫定 — ROIC/WACC は Phase 3.2 で精緻化)" とラベル分離 + ⓘ で説明。
+
+**E2E テスト**: Phase 3.1b マージ前に `tests/integration/test_composite_e2e.py` で EODHD VCR fixture により上位 5 銘柄スナップショット検証。
+
+---
+
+## 13. 残課題（オープン）
 
 - DCF（Discounted Cash Flow）モデルの実装範囲
 - リアル ESG スコアの取得元（Refinitiv/MSCI は有料、代替ソース調査必要）
