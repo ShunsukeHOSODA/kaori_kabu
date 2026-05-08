@@ -15,7 +15,18 @@ JSONL 1 行のスキーマ:
         "rationale": "Magic Formula スコア 87/100",
         "trigger": {"skill": "magic-formula-screener", ...} | null,
         "stop_loss_atr_jpy": "22500" | null,
-        "code_commit": "edabbe1" | null
+        "code_commit": "edabbe1" | null,
+        "news_context": {                          // Phase 2 追加
+            "sentiment_score": "0.65",
+            "confidence": "0.85",
+            "summary": "...",
+            "key_themes": [...],
+            "risk_signals": [...],
+            "source_urls": [...],
+            "fetched_at": "...",
+            "model_version": "claude-haiku-4-5-20251001",
+            "lenses_applied": ["Buffett_Munger", ...]
+        } | null
     }
 """
 
@@ -25,7 +36,12 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from analysis.sentiment import SentimentResult
 
 
 def append_decision(
@@ -39,6 +55,7 @@ def append_decision(
     trigger: dict[str, Any] | None = None,
     stop_loss_atr_jpy: Decimal | None = None,
     code_commit: str | None = None,
+    news_context: dict[str, Any] | None = None,
 ) -> Path:
     """売買判断を JSONL に 1 行追記（append-only）。
 
@@ -55,6 +72,11 @@ def append_decision(
         trigger: 判断のきっかけ（スキル名 / スコア等）
         stop_loss_atr_jpy: ATR トレーリングストップ価格（JPY）
         code_commit: 計算時の git commit short hash
+        news_context: 売買時のニュースコンテキスト（Phase 2 追加）。
+            :func:`build_news_context_from_sentiment` で SentimentResult から
+            構築するのが標準。直接 dict を渡すこともできる。
+            「なぜ買ったか」を市場ニュース・地政学・センチメントまで含めて
+            完全再現可能にする（CLAUDE.md §9.5 / §9.8）。
 
     Returns:
         書き込み先のパス。
@@ -75,12 +97,58 @@ def append_decision(
             str(stop_loss_atr_jpy) if stop_loss_atr_jpy is not None else None
         ),
         "code_commit": code_commit,
+        "news_context": news_context,
     }
 
     with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     return log_path
+
+
+def build_news_context_from_sentiment(
+    sentiment_result: SentimentResult,
+    news_df: pd.DataFrame,
+    *,
+    lenses_applied: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """SentimentResult + ニュース DataFrame → JSON 直列化可能な news_context。
+
+    :func:`append_decision` の ``news_context`` 引数にそのまま渡せる形式に
+    変換する。Decimal や Timestamp は文字列化、URL リストは ``source_urls``
+    に集約する。
+
+    Args:
+        sentiment_result: :func:`analyze_sentiment` の戻り値
+        news_df: センチメント分析の入力に使ったニュース DataFrame
+            （``url`` 列があれば ``source_urls`` に展開）
+        lenses_applied: 適用した投資家レンズ名タプル
+            （例 ``("Buffett_Munger", "Burry")``）
+
+    Returns:
+        JSON 直列化可能な dict（Decimal は文字列、Timestamp は ISO 8601）。
+    """
+    source_urls: list[str] = []
+    if "url" in news_df.columns:
+        source_urls = [
+            str(u) for u in news_df["url"].tolist() if u and str(u) != "nan"
+        ]
+
+    md = sentiment_result.metadata
+    return {
+        "sentiment_score": str(sentiment_result.sentiment_score),
+        "confidence": str(sentiment_result.confidence),
+        "summary": sentiment_result.summary,
+        "key_themes": list(sentiment_result.key_themes),
+        "risk_signals": list(sentiment_result.risk_signals),
+        "source_urls": source_urls,
+        "fetched_at": md.calculated_at.isoformat(),
+        "model_version": md.model_version,
+        "calculation_method": md.calculation_method,
+        "input_news_count": md.input_news_count,
+        "academic_source": md.academic_source,
+        "lenses_applied": list(lenses_applied),
+    }
 
 
 def read_decisions(

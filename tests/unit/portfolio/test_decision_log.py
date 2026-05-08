@@ -84,7 +84,7 @@ class TestAppendDecision:
         assert rec2["action"] == "SELL"
 
     def test_オプショナルフィールド省略可(self, tmp_path: Path) -> None:
-        """trigger / stop_loss / code_commit を省略しても動く。"""
+        """trigger / stop_loss / code_commit / news_context を省略しても動く。"""
         from portfolio.decision_log import append_decision
 
         log_path = append_decision(
@@ -101,6 +101,99 @@ class TestAppendDecision:
         assert record["trigger"] is None
         assert record["stop_loss_atr_jpy"] is None
         assert record["code_commit"] is None
+        assert record["news_context"] is None
+
+    def test_news_context埋め込み(self, tmp_path: Path) -> None:
+        """売買時にニュースコンテキスト（センチメント + 要約 + ソース URL）
+        が JSONL に保存される（CLAUDE.md §9.5 / Phase 2 要件）。
+
+        後で「なぜ買ったか」を news_context まで含めて完全再現可能。
+        """
+        from portfolio.decision_log import append_decision
+
+        news_context = {
+            "sentiment_score": "0.65",
+            "confidence": "0.85",
+            "summary": "AI 投資加速、決算良好",
+            "key_themes": ["earnings beat", "AI investment"],
+            "risk_signals": ["regulatory headwind"],
+            "source_urls": [
+                "https://example.com/aapl-q1",
+                "https://example.com/aapl-ai",
+            ],
+            "fetched_at": "2026-05-09T14:30:00+00:00",
+            "model_version": "claude-haiku-4-5-20251001",
+            "lenses_applied": ["Buffett_Munger", "Burry"],
+        }
+
+        log_path = append_decision(
+            log_dir=tmp_path,
+            action="BUY",
+            ticker="AAPL",
+            shares=Decimal("10"),
+            price_jpy=Decimal("25000"),
+            rationale="Magic Formula スコア + ニュース強気センチメント",
+            trigger={"skill": "magic-formula-screener"},
+            news_context=news_context,
+        )
+
+        record = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert record["news_context"]["sentiment_score"] == "0.65"
+        assert "Buffett_Munger" in record["news_context"]["lenses_applied"]
+        assert record["news_context"]["model_version"] == (
+            "claude-haiku-4-5-20251001"
+        )
+
+
+@pytest.mark.unit
+class TestBuildNewsContextFromSentiment:
+    """SentimentResult + ニュース DataFrame → news_context dict 変換ヘルパー。"""
+
+    def test_SentimentResult_news_df_からnews_context構築(self) -> None:
+        from datetime import datetime as DT
+        from datetime import timezone as TZ
+        from decimal import Decimal as D
+
+        import pandas as pd
+
+        from analysis.sentiment import SentimentMetadata, SentimentResult
+        from portfolio.decision_log import build_news_context_from_sentiment
+
+        result = SentimentResult(
+            sentiment_score=D("0.65"),
+            confidence=D("0.85"),
+            key_themes=("AI", "earnings"),
+            risk_signals=("regulation",),
+            summary="強気",
+            metadata=SentimentMetadata(
+                model="claude-haiku-4-5",
+                model_version="claude-haiku-4-5-20251001",
+                calculation_method="sentiment_v1",
+                input_news_count=2,
+                input_period_start=None,
+                input_period_end=None,
+                calculated_at=DT.now(TZ.utc),
+                academic_source="Tetlock 2007",
+                code_commit=None,
+            ),
+        )
+        news_df = pd.DataFrame(
+            [
+                {"url": "https://a"},
+                {"url": "https://b"},
+            ]
+        )
+
+        ctx = build_news_context_from_sentiment(
+            result, news_df, lenses_applied=("Buffett_Munger",)
+        )
+
+        assert ctx["sentiment_score"] == "0.65"
+        assert ctx["confidence"] == "0.85"
+        assert ctx["summary"] == "強気"
+        assert ctx["source_urls"] == ["https://a", "https://b"]
+        assert ctx["lenses_applied"] == ["Buffett_Munger"]
+        assert ctx["model_version"] == "claude-haiku-4-5-20251001"
 
 
 @pytest.mark.unit
