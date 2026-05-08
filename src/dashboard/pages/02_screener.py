@@ -27,11 +27,13 @@ import streamlit as st
 
 from src.analysis.composite import (
     CompositeScoreInputs,
+    GrowthSubScoreInputs,
     IncomeSubScoreInputs,
     PRESET_DISPLAY_LABELS,
     PRESET_RATIONALE,
     QualitySubScoreInputs,
     RiskSubScoreInputs,
+    ValueSubScoreInputs,
     compute_composite_score,
 )
 from src.analysis.investor_lenses import INVESTOR_LENSES, apply_lenses
@@ -315,9 +317,71 @@ def build_composite_inputs_from_fundamentals(
             sentiment_score=sentiment_score,
             sentiment_confidence=sentiment_confidence,
             momentum_12m_return=momentum_12m,
+            value=ValueSubScoreInputs(
+                ebit_jpy=ebit if ebit > 0 else None,
+                enterprise_value_jpy=ev,
+            ),
+            # Growth/Momentum は Phase 3.1b 後追いで EODHD CAGR + 価格履歴呼び出し
+            growth=_build_growth_inputs(highlights, income_yearly),
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _build_growth_inputs(
+    highlights: dict[str, Any],
+    income_yearly: dict[str, Any],
+) -> GrowthSubScoreInputs | None:
+    """EODHD highlights + income yearly から Growth 入力を構築。
+
+    5y CAGR は yearly データから計算、不足時は None。
+    PEG は PER × 期待成長率（forward 推奨）から内部計算。
+    """
+    if not highlights:
+        return None
+
+    pe_ratio = _to_decimal_or_none(highlights.get("PERatio"))
+    earnings_growth_rate = _to_decimal_or_none(
+        highlights.get("QuarterlyEarningsGrowthYOY")
+    )
+    dividend_growth = _to_decimal_or_none(
+        highlights.get("DividendGrowth5Years")
+    )
+    revenue_cagr = _compute_cagr_from_yearly(income_yearly, "totalRevenue", years=5)
+    eps_cagr = _compute_cagr_from_yearly(income_yearly, "dilutedEps", years=5)
+
+    return GrowthSubScoreInputs(
+        revenue_5y_cagr=revenue_cagr,
+        eps_5y_cagr=eps_cagr,
+        dividend_5y_cagr=dividend_growth,
+        pe_ratio=pe_ratio,
+        earnings_growth_rate=earnings_growth_rate,
+    )
+
+
+def _compute_cagr_from_yearly(
+    yearly: dict[str, Any],
+    field: str,
+    *,
+    years: int = 5,
+) -> Decimal | None:
+    """yearly dict (date 文字列キー) から N 年 CAGR を計算。
+
+    成長率 = (latest / past) ** (1/N) - 1。past または latest が 0 / 負 / 欠損なら None。
+    """
+    if not yearly:
+        return None
+    sorted_keys = sorted(yearly.keys())
+    if len(sorted_keys) < years + 1:
+        return None
+    latest = _to_decimal_or_none(yearly[sorted_keys[-1]].get(field))
+    past = _to_decimal_or_none(yearly[sorted_keys[-(years + 1)]].get(field))
+    if latest is None or past is None or past <= 0 or latest <= 0:
+        return None
+    # CAGR = (latest/past)^(1/years) - 1
+    ratio = float(latest) / float(past)
+    cagr = ratio ** (1.0 / years) - 1.0
+    return Decimal(str(round(cagr, 6)))
 
 
 # ---------------------------------------------------------------------------
@@ -822,8 +886,11 @@ if run_button:
                     "ティッカー": ticker_name,
                     "Composite": f"{composite.composite_score:.1f}",
                     "Q": f"{composite.sub_scores['Q']:.0f}",
+                    "V": f"{composite.sub_scores['V']:.0f}",
                     "I": f"{composite.sub_scores['I']:.0f}",
+                    "G": f"{composite.sub_scores['G']:.0f}",
                     "R": f"{composite.sub_scores['R']:.0f}",
+                    "M": f"{composite.sub_scores['M']:.0f}",
                     "S": f"{composite.sub_scores['S']:.0f}",
                     "警告": warning_severity,
                 }
