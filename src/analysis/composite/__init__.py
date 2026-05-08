@@ -53,6 +53,11 @@ from .subscores.growth import (
     calculate_peg,
     compute_growth_subscore,
 )
+from .subscores.momentum import (
+    MomentumSubScoreInputs,
+    MomentumSubScoreResult,
+    compute_momentum_subscore,
+)
 from .subscores.value import (
     ValueSubScoreInputs,
     ValueSubScoreResult,
@@ -91,6 +96,9 @@ __all__ = [
     "GrowthSubScoreResult",
     "calculate_peg",
     "compute_growth_subscore",
+    "MomentumSubScoreInputs",
+    "MomentumSubScoreResult",
+    "compute_momentum_subscore",
     # Warnings
     "CompositeWarning",
     "evaluate_warnings",
