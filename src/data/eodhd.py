@@ -25,8 +25,8 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from data._provenance import attach_provenance
-from data.cache import ParquetCache
+from ._provenance import attach_provenance
+from .cache import ParquetCache
 
 logger = logging.getLogger(__name__)
 
