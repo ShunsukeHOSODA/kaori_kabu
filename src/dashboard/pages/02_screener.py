@@ -43,10 +43,12 @@ from src.ui.components import (
     format_sentiment_emoji,
     format_sentiment_label,
 )
+from src.ui.theme import apply_theme
 
 st.set_page_config(
     page_title="Magic Formula — kaori_kabu", page_icon="📊", layout="wide"
 )
+apply_theme()
 
 st.title("📊 Magic Formula スクリーナー")
 st.caption("Joel Greenblatt の ROC + Earnings Yield で割安銘柄を抽出")

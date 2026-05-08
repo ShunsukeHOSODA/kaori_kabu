@@ -11,6 +11,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src.config.settings import settings
+from src.ui.theme import apply_theme
 
 
 def main() -> None:
@@ -21,6 +22,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    apply_theme()
 
     # サイドバー
     with st.sidebar:

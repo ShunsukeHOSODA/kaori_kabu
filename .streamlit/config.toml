@@ -1,0 +1,22 @@
+# kaori_kabu Streamlit theme — Dark luxury + Editorial（CLAUDE.md §1）
+#
+# デザイン方針:
+#   - ダーク基調: 投資ダッシュボードとして長時間視認に耐える深い navy
+#   - アクセント: emerald（強気・実行）、amber（警告）、ruby（弱気・損失）
+#   - 数字は tabular-nums で揃える（src/ui/theme.py の CSS injection）
+#   - 余白大胆 + タイポ階層強化で「素人ぽくない」プロ品質感
+
+[theme]
+base = "dark"
+primaryColor = "#10b981"
+backgroundColor = "#0a0e1a"
+secondaryBackgroundColor = "#141b2d"
+textColor = "#e7eaf3"
+font = "sans serif"
+
+[server]
+headless = false
+runOnSave = true
+
+[browser]
+gatherUsageStats = false

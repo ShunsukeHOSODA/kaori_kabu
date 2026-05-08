@@ -28,10 +28,12 @@ from src.portfolio.valuation import (
     total_market_value_jpy,
     total_unrealized_pnl_jpy,
 )
+from src.ui.theme import apply_theme
 
 st.set_page_config(
     page_title="ホーム — kaori_kabu", page_icon="🏠", layout="wide"
 )
+apply_theme()
 
 st.title("🏠 ホーム — 保有銘柄サマリー")
 st.caption("当日の評価額・含み益損を一画面で確認（CLAUDE.md §4）")
