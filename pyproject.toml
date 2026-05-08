@@ -7,7 +7,7 @@ name = "kaori_kabu"
 version = "0.1.0"
 description = "かおりんの個人ローカル株運用ダッシュボード — 世界トップ投資家の手法を AI で再現"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [
     { name = "Kaori Hosoda" },
@@ -16,13 +16,14 @@ keywords = ["finance", "stock", "trading", "backtest", "portfolio", "magic-formu
 
 dependencies = [
     # --- データ取得・統合 ---
-    "openbb>=4.4.0",
-    "openbb-eodhd>=1.0.0",
-    "openbb-fred>=1.0.0",
-    "openbb-sec>=1.0.0",
+    "openbb>=4.4.0",                     # OpenBB Platform SDK 本体
+    "eodhd>=1.0.0",                      # EODHD 公式 Python クライアント
+    "fredapi>=0.5.2",                    # FRED 公式
     "yfinance>=0.2.40",
-    "jquantsapi>=1.7.0",
+    "jquants-api-client>=1.7.0",         # J-Quants 公式
     "pandas-datareader>=0.10.0",
+    "financetoolkit>=2.0.0",             # JerBouma/FinanceToolkit: 150+ 財務指標一括計算
+    "sec-edgar-downloader>=5.0.0",       # SEC EDGAR (13F, Form 4, 10-K)
 
     # --- データフレーム・数値計算 ---
     "pandas>=2.2.0",
@@ -52,7 +53,7 @@ dependencies = [
     "arch>=7.0.0",
 
     # --- 銘柄マスタ ---
-    "financedatabase>=2.4.0",
+    "financedatabase>=2.3.0",
 
     # --- ダッシュボード・可視化 ---
     "streamlit>=1.39.0",
@@ -65,7 +66,7 @@ dependencies = [
     "httpx>=0.27.0",
     "requests>=2.32.0",
     "aiohttp>=3.10.0",
-    "tenacity>=9.0.0",
+    "tenacity>=8.2.0,<9.0.0",
     "ratelimit>=2.2.1",
 
     # --- 設定・ユーティリティ ---
@@ -132,7 +133,7 @@ packages = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 exclude = [".venv", "build", "dist", "notebooks", "data"]
 
 [tool.ruff.lint]
@@ -144,7 +145,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -199,7 +200,7 @@ show_missing = true
 [tool.pyright]
 include = ["src", "tests"]
 exclude = [".venv", "build", "dist", "notebooks", "data"]
-pythonVersion = "3.11"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingImports = "warning"
 reportMissingTypeStubs = "none"
