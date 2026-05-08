@@ -341,6 +341,45 @@ src/analysis/composite/
 
 ---
 
+## 12.5 Phase 3.4 — トピック銘柄ウォッチ（別枠候補プール）
+
+**目的**: Buffett 派の Composite Score では構造的に拾えない「初期 Tesla / 物語駆動成長株」を、ベスト判定ではなく**話題銘柄候補**として別枠で表示する。Tavily/Exa の Web 検索で「今話題の有望株」を日次収集し、Streamlit ダッシュボードに**独立パネル**として並走させる。
+
+### 設計原則（規律破壊防止）
+
+1. **Composite Score の TOP リストには絶対混ぜない** — 別タブ／別パネル
+2. UI に「話題で拾った候補。本物の評価は Composite Score で確認せよ」を必ず明示
+3. Half-Kelly でも別枠扱いし、配分上限を本命の半分以下に強制
+
+### コンポーネント
+
+```
+src/data/topic_stocks.py        # Tavily/Exa 呼び出し + パース + 重複排除
+src/analysis/topic_screener.py  # 話題スコア（記事数 / 取り上げメディア層）
+src/dashboard/pages/04_topics.py  # 独立 Streamlit ページ
+data/cache/topic_stocks/{YYYY-MM-DD}.parquet  # 日次キャッシュ
+```
+
+### 表示項目
+
+| 列 | 内容 |
+|---|---|
+| ticker / 会社名 | 銘柄識別 |
+| 話題度 | 記事数 + メディア層スコア（仮） |
+| 1 行サマリ | LLM 要約 |
+| 出所 | 記事 URL + 公開日 |
+| 参考: Composite Score | データ取得できる場合のみ |
+| 初出日 | first seen（鮮度判定） |
+
+### スコープ外（明示）
+
+- 利益ゼロ・暗号資産は対象外データに含めるが**スコアは付けない**（参考表示のみ）
+- Composite Score の重み配分には一切影響させない
+
+→ Phase 3.1b 完走後に MVP 着手。
+
+---
+
 ## 13. 残課題（オープン）
 
 - DCF（Discounted Cash Flow）モデルの実装範囲
