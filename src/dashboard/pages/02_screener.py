@@ -50,6 +50,7 @@ from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDClient
 from src.data.news import MarketContext, NewsClient
 from src.ui.components import (
+    composite_radar_chart,
     format_lenses_applied,
     format_sentiment_emoji,
     format_sentiment_label,
@@ -840,6 +841,7 @@ if run_button:
 
         composite_rows: list[dict[str, Any]] = []
         composite_warnings: list[tuple[str, list[Any]]] = []
+        radar_data: list[tuple[str, float, dict[str, float]]] = []
         progress = st.progress(0, text="Composite Score 計算中...")
 
         for idx, (_, mf_row) in enumerate(result.result.iterrows()):
@@ -899,6 +901,9 @@ if run_button:
                 composite_warnings.append(
                     (ticker_name, list(composite.warnings))
                 )
+            radar_data.append(
+                (ticker_name, composite.composite_score, dict(composite.sub_scores))
+            )
 
         progress.empty()
 
@@ -923,10 +928,28 @@ if run_button:
                             )
                             st.markdown(f"- {icon} `{w.code}`: {w.message}")
             st.caption(
-                "Q=Quality / I=Income / R=Risk / S=Sentiment（各 0-100）。"
+                "Q=Quality / V=Value / I=Income / G=Growth / R=Risk / "
+                "M=Momentum / S=Sentiment（各 0-100）。"
                 "Composite はプリセット重み付け合算（0-100）。"
                 "詳細設計: `docs/long-term-investment-architecture.md`"
             )
+
+            # 7 軸レーダーチャート — 上位 N 銘柄を並べて視覚比較
+            top_n = sorted(
+                radar_data, key=lambda r: r[1], reverse=True
+            )[:3]
+            if top_n:
+                st.markdown("##### 🎯 上位銘柄 7 軸レーダーチャート")
+                cols = st.columns(len(top_n))
+                for col, (tk, score, subs) in zip(cols, top_n, strict=False):
+                    with col:
+                        fig = composite_radar_chart(ticker=tk, sub_scores=subs)
+                        st.plotly_chart(
+                            fig,
+                            use_container_width=True,
+                            key=f"radar_{tk}",
+                        )
+                        st.caption(f"Composite: **{score:.1f}** / 100")
         else:
             st.info(
                 "Composite Score を計算できる銘柄がありませんでした"

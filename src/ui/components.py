@@ -175,3 +175,65 @@ def render_news_tab(
             "lenses_applied": list(lenses_applied),
         }
         st.json(info)
+
+
+# ---------------------------------------------------------------------------
+# Composite Score 7 軸レーダーチャート（Phase 3.1b）
+# ---------------------------------------------------------------------------
+
+_AXIS_LABELS: tuple[tuple[str, str], ...] = (
+    ("Q", "Quality"),
+    ("V", "Value"),
+    ("I", "Income"),
+    ("G", "Growth"),
+    ("R", "Risk"),
+    ("M", "Momentum"),
+    ("S", "Sentiment"),
+)
+
+
+def composite_radar_chart(
+    *,
+    ticker: str,
+    sub_scores: dict[str, float],
+) -> Any:
+    """7 軸 Composite Score を Plotly Scatterpolar でレーダー描画。
+
+    Args:
+        ticker: 銘柄表示名（タイトルに反映）
+        sub_scores: 軸記号 → 0-100 スコア dict（``Q``/``V``/``I``/``G``/``R``/``M``/``S``）。
+            欠損キーは 0.0 で補完（Phase 3.1a 互換）。
+
+    Returns:
+        :class:`plotly.graph_objects.Figure`。Streamlit 側で
+        ``st.plotly_chart(fig)`` として描画する。
+    """
+    import plotly.graph_objects as go  # noqa: PLC0415 — UI モジュール起動コスト軽減
+
+    theta = [label for _key, label in _AXIS_LABELS]
+    r = [float(sub_scores.get(key, 0.0)) for key, _label in _AXIS_LABELS]
+
+    # 閉じたポリゴンにするため最初の値を末尾に追加
+    theta_closed = theta + [theta[0]]
+    r_closed = r + [r[0]]
+
+    fig = go.Figure(
+        data=go.Scatterpolar(
+            r=r_closed,
+            theta=theta_closed,
+            fill="toself",
+            name=ticker,
+            line=dict(color="#4F8DFF"),
+            fillcolor="rgba(79, 141, 255, 0.25)",
+        )
+    )
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100], tick0=0, dtick=20),
+        ),
+        showlegend=False,
+        title=dict(text=f"{ticker} — Composite Score 7 軸"),
+        margin=dict(l=40, r=40, t=60, b=40),
+        height=380,
+    )
+    return fig
