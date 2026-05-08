@@ -143,16 +143,23 @@ docs/  ← 永続的（北極星）
 
 **目的**: すべての数値・シグナル・判断結果を**出所まで遡及可能**にする。バグ調査・戦略改善・誤った判断の振り返りに必須。Anthropic Claude Financial Services の "ソース追跡" 設計を参考。
 
-#### 9.8.1 DataFrame 出力に必須メタデータカラム
+#### 9.8.1 DataFrame 出力に必須メタデータ（`df.attrs` 経由）
 
-データレイヤー（`src/data/*.py`）が返す全 DataFrame は以下を含む：
+データレイヤー（`src/data/*.py`）が返す全 DataFrame は **Pandas 公式の `df.attrs` 辞書** に以下のメタデータを持つ。**カラムには持たせない**（30 年日次 = 7,500 行に同じ値を繰り返すのはメモリ非効率）：
 
-| カラム | 型 | 例 |
+| キー | 型 | 例 |
 |---|---|---|
 | `source` | str | `"EODHD"` / `"J-Quants"` / `"SEC EDGAR"` |
 | `fetched_at` | pd.Timestamp (UTC) | `2026-05-09 10:30:00+00:00` |
 | `cache_hit` | bool | `True` / `False` |
 | `cache_age_sec` | int \| None | キャッシュヒット時のみ |
+| `endpoint` | str | 呼び出した API エンドポイント |
+| `params_hash` | str | リクエストパラメータの SHA256（再現性確認用） |
+
+**運用上の注意**:
+- `df.attrs` は Pandas 1.0+ 公式機能、`to_parquet` で保持される
+- 連結・スライス時の伝播は明示的に必要（`pd.concat` は `attrs` を保持しない場合あり）
+- `src/data/_provenance.py` に伝播ヘルパー `propagate_attrs(src_df, dst_df)` を実装し、各データレイヤーで使用
 
 #### 9.8.2 シグナル・スコア出力に必須メタデータ
 
