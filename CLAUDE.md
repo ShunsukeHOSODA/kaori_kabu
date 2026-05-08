@@ -139,6 +139,91 @@ docs/  ← 永続的（北極星）
 - **Recency Bias** → 5 年以上のヒストリカル必須
 - **Overconfidence** → Half-Kelly でレバレッジ抑制
 
+### 9.8 Provenance（出所追跡）規約 ★ 全レイヤー必須
+
+**目的**: すべての数値・シグナル・判断結果を**出所まで遡及可能**にする。バグ調査・戦略改善・誤った判断の振り返りに必須。Anthropic Claude Financial Services の "ソース追跡" 設計を参考。
+
+#### 9.8.1 DataFrame 出力に必須メタデータカラム
+
+データレイヤー（`src/data/*.py`）が返す全 DataFrame は以下を含む：
+
+| カラム | 型 | 例 |
+|---|---|---|
+| `source` | str | `"EODHD"` / `"J-Quants"` / `"SEC EDGAR"` |
+| `fetched_at` | pd.Timestamp (UTC) | `2026-05-09 10:30:00+00:00` |
+| `cache_hit` | bool | `True` / `False` |
+| `cache_age_sec` | int \| None | キャッシュヒット時のみ |
+
+#### 9.8.2 シグナル・スコア出力に必須メタデータ
+
+`kabu-analyst` agent や `src/analysis/*.py` が返す JSON は `metadata` キーに以下を含む：
+
+```python
+{
+    "metadata": {
+        "ticker": "AAPL",
+        "calculation_method": "magic_formula_v1",      # アルゴリズムバージョン
+        "academic_source": "Greenblatt 2010 Ch.5",     # 学術根拠
+        "input_data_period": "2020-01-01 to 2025-12-31",
+        "input_data_source": "EODHD",                  # 計算入力のデータ源
+        "input_cache_hit": True,
+        "calculated_at": "2026-05-09T10:35:00+09:00",
+        "code_commit": "8610a0d",                       # 計算時の git commit
+    },
+    "result": { ... }
+}
+```
+
+#### 9.8.3 Decision Log（売買判断ログ）の Provenance
+
+`data/decision-log/{YYYY-MM}.jsonl` 1 行の必須フィールド：
+
+```json
+{
+  "timestamp": "2026-05-09T14:30:00+09:00",
+  "action": "BUY",
+  "ticker": "AAPL",
+  "shares": 10,
+  "price_jpy": 25000,
+  "rationale": "Magic Formula スコア 87/100、ROC 28%",
+  "trigger": {
+    "skill": "magic-formula-screener",
+    "screener_run_at": "2026-05-09T10:35:00+09:00",
+    "screener_metadata": { ... §9.8.2 のメタデータ ... }
+  },
+  "stop_loss_atr_jpy": 22500,
+  "code_commit": "8610a0d"
+}
+```
+
+→ 後で「なぜこの銘柄を買ったか」を**完全に再現可能**にする。
+
+#### 9.8.4 キャッシュファイルの命名と内部構造
+
+`data/cache/{provider}/{ticker}_{YYYYMMDD}.parquet` のメタデータ（pyarrow schema metadata）に：
+
+- `kabu_source` — 取得元 API
+- `kabu_fetched_at` — ISO 8601 UTC
+- `kabu_endpoint` — 呼び出した API エンドポイント
+- `kabu_params_hash` — リクエストパラメータの SHA256（再現性確認用）
+
+#### 9.8.5 UI 表示でも Provenance を必ず開示
+
+Streamlit ダッシュボードのスコア・チャート横に必ず「ⓘ」アイコンで以下を展開可能に：
+
+- データソース・取得日時
+- キャッシュヒット状況
+- 計算方法・バージョン
+- 学術的根拠
+
+→ ブラックボックスを許さない。**すべての数値は説明できる**。
+
+#### 9.8.6 実装支援
+
+- `src/data/cache.py` に `MetadataMixin` を実装し、全データレイヤーで継承
+- `src/analysis/_provenance.py` に `wrap_with_provenance(result, **metadata)` ヘルパー
+- pytest fixture で provenance フィールドの存在を強制テスト
+
 ## 10. コンテキスト管理
 
 - **300-400k トークンで rot 開始** — 50% 超のコンパクションは避け、`/clear` か新セッション

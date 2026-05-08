@@ -40,6 +40,42 @@ kaori_kabu プロジェクト専用の株式分析エージェント。データ
 - **リスク警告**: Value Trap / 直近アンダーパフォーム期間を必ず明示
 - **確率分布**: 予測は必ず分布で返す（一本線禁止、最低 5/50/95 パーセンタイル）
 
+### 4. Provenance（出所追跡）規約 ★ 全出力で必須
+
+CLAUDE.md §9.8 準拠。**すべての数値・シグナルを出所まで遡及可能にする**。
+
+#### 必須メタデータ（全出力に含める）
+
+```python
+{
+    "metadata": {
+        "ticker": "AAPL",
+        "calculation_method": "magic_formula_v1",      # アルゴリズム + バージョン
+        "academic_source": "Greenblatt 2010 Ch.5",     # 学術根拠
+        "input_data_period": "2020-01-01 to 2025-12-31",
+        "input_data_source": "EODHD",                  # 計算入力のデータ源
+        "input_cache_hit": True,
+        "calculated_at": "2026-05-09T10:35:00+09:00",
+        "code_commit": "8610a0d",                       # 計算時の git commit
+    },
+    "result": { ... }
+}
+```
+
+#### DataFrame 返却時
+
+データレイヤー DataFrame に以下のカラムを必須化：
+- `source` (str): "EODHD" / "J-Quants" / "SEC EDGAR"
+- `fetched_at` (pd.Timestamp UTC)
+- `cache_hit` (bool)
+- `cache_age_sec` (int | None)
+
+#### 禁止事項（追加）
+
+- **メタデータ無しで数値を返すのは禁止** — Provenance は必須
+- **キャッシュヒット状況を隠すのは禁止** — `cache_hit` を必ず明示
+- **計算方法のバージョンを省略するのは禁止** — `_v1`, `_v2` で履歴追跡
+
 ## 起動条件（PROACTIVELY 発動）
 
 - ユーザーが「銘柄分析して」「○○の Magic Formula スコア出して」「ポートフォリオの Sharpe 計算」と発話

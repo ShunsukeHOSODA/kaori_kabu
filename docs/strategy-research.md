@@ -261,6 +261,37 @@
 6. **損切り規律** — ATR ストップを全ポジションに強制適用
 7. **税務考慮** — NISA / 特定口座を分離、after-tax リターン
 8. **売買履歴は append-only** — 過去データ書き換え禁止
+9. **Provenance（出所追跡）の徹底** ★ — 全数値・シグナルに data_source / fetched_at / cache_hit / calculation_method / academic_source を付与（CLAUDE.md §9.8）
+
+## 🔬 Provenance 強化（Anthropic Claude Financial Services から学んだ設計）
+
+**「すべての数値を出所まで遡及可能」** は個人運用にも超有用。kaori_kabu では以下のレイヤーで徹底する：
+
+### Provenance を埋め込む 5 つのレイヤー
+
+| レイヤー | 何を記録 | 実装場所 |
+|---|---|---|
+| **データレイヤー** | source / fetched_at / cache_hit / cache_age | DataFrame カラム |
+| **分析レイヤー** | calculation_method / academic_source / input_data_period | JSON metadata |
+| **シグナル出力** | code_commit / calculated_at + 上記すべて | kabu-analyst 出力 |
+| **Decision Log** | trigger（どのスクリーナーから） / screener_metadata | `data/decision-log/*.jsonl` |
+| **UI 表示** | ⓘ アイコンでメタデータ展開 | Streamlit components |
+
+### 期待効果
+
+1. **バグ調査の高速化** — 「この数値おかしい」→ 出所を追跡できる
+2. **戦略改善** — 「なぜこの銘柄を買ったか」を完全再現可能
+3. **誤判断の振り返り** — 損失トレード後に判断根拠を分析
+4. **キャッシュ汚染検知** — `cache_hit=True` だが古い場合を検出
+5. **ブラックボックス禁止** — 全数値が説明可能
+
+### 実装の優先度
+
+- **Phase 1 から徹底**: cache.py にメタデータ層を組み込む（データレイヤー実装時）
+- `src/analysis/_provenance.py` に共通ヘルパー `wrap_with_provenance()` を実装
+- pytest fixture で全戦略出力に metadata 存在を強制
+
+→ これは **Provenance 規約として CLAUDE.md §9.8 に明文化済み**。Phase 1 実装時の必須要件。
 
 ---
 
