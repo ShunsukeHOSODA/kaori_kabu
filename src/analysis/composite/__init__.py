@@ -47,6 +47,12 @@ from .subscores.sentiment import (
     SentimentSubScoreResult,
     compute_sentiment_subscore,
 )
+from .subscores.growth import (
+    GrowthSubScoreInputs,
+    GrowthSubScoreResult,
+    calculate_peg,
+    compute_growth_subscore,
+)
 from .subscores.value import (
     ValueSubScoreInputs,
     ValueSubScoreResult,
@@ -81,6 +87,10 @@ __all__ = [
     "ValueSubScoreResult",
     "calculate_earnings_yield",
     "compute_value_subscore",
+    "GrowthSubScoreInputs",
+    "GrowthSubScoreResult",
+    "calculate_peg",
+    "compute_growth_subscore",
     # Warnings
     "CompositeWarning",
     "evaluate_warnings",
