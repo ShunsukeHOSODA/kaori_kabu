@@ -25,6 +25,15 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src.analysis.composite import (
+    CompositeScoreInputs,
+    IncomeSubScoreInputs,
+    PRESET_DISPLAY_LABELS,
+    PRESET_RATIONALE,
+    QualitySubScoreInputs,
+    RiskSubScoreInputs,
+    compute_composite_score,
+)
 from src.analysis.investor_lenses import INVESTOR_LENSES, apply_lenses
 from src.analysis.magic_formula import (
     MagicFormulaResult,
@@ -179,6 +188,136 @@ def parse_tickers(raw: str) -> list[str]:
             seen.add(p)
             result.append(p)
     return result
+
+
+def _to_decimal_or_none(value: Any) -> Decimal | None:
+    """EODHD ファンダの数値（int/float/None/"None"）→ Decimal | None。"""
+    if value is None or value == "None":
+        return None
+    try:
+        return Decimal(str(value))
+    except (ValueError, ArithmeticError, TypeError):
+        return None
+
+
+def build_composite_inputs_from_fundamentals(
+    fundamentals: dict[str, Any],
+    *,
+    current_price_jpy: Decimal,
+    sentiment_score: Decimal = Decimal("0"),
+    sentiment_confidence: Decimal = Decimal("0"),
+    momentum_12m: Decimal | None = None,
+) -> CompositeScoreInputs | None:
+    """EODHD ``/fundamentals/`` の dict から Composite Score 入力を構築。
+
+    欠損フィールドは ``None`` / ``Decimal("0")`` で fallback。連続増配年数 /
+    連続赤字年数は履歴解析が必要なため Phase 3.1a では 0 固定（Phase 3.1b で
+    精緻化）。Beneish M / Short interest は Phase 3.2 で追加。
+    """
+    try:
+        general = fundamentals.get("General", {})
+        highlights = fundamentals.get("Highlights", {})
+        financials = fundamentals.get("Financials", {})
+        income_yearly = financials.get("Income_Statement", {}).get("yearly", {})
+        balance_yearly = financials.get("Balance_Sheet", {}).get("yearly", {})
+        cashflow_yearly = financials.get("Cash_Flow", {}).get("yearly", {})
+
+        if not income_yearly or not balance_yearly:
+            return None
+
+        latest_income = income_yearly[max(income_yearly.keys())]
+        latest_balance = balance_yearly[max(balance_yearly.keys())]
+        latest_cashflow: dict[str, Any] = (
+            cashflow_yearly[max(cashflow_yearly.keys())]
+            if cashflow_yearly
+            else {}
+        )
+
+        # 共通: 時価総額 / EV / セクター
+        market_cap = _to_decimal_or_none(highlights.get("MarketCapitalization"))
+        ev = _to_decimal_or_none(highlights.get("EnterpriseValue"))
+        sector = general.get("Sector") or general.get("GicSector")
+
+        # Income inputs
+        annual_div = _to_decimal_or_none(highlights.get("ForwardAnnualDividendRate"))
+        payout = _to_decimal_or_none(highlights.get("PayoutRatio"))
+        # buyback: capital_expenditure と区別、commonStockRepurchased を使う
+        buybacks_raw = latest_cashflow.get("commonStockRepurchased")
+        buybacks = abs(_to_decimal_or_none(buybacks_raw) or Decimal("0"))
+        # FCF = operating cashflow - capex（capex は通常負）
+        op_cf = _to_decimal_or_none(
+            latest_cashflow.get("totalCashFromOperatingActivities")
+        )
+        capex = _to_decimal_or_none(latest_cashflow.get("capitalExpenditures"))
+        fcf: Decimal | None = None
+        if op_cf is not None and capex is not None:
+            fcf = op_cf - abs(capex)
+
+        # Risk inputs
+        ca = _to_decimal_or_none(latest_balance.get("totalCurrentAssets")) or Decimal("0")
+        cl = _to_decimal_or_none(latest_balance.get("totalCurrentLiabilities")) or Decimal("0")
+        wc = ca - cl
+        re = _to_decimal_or_none(latest_balance.get("retainedEarnings")) or Decimal("0")
+        ebit = _to_decimal_or_none(latest_income.get("operatingIncome")) or Decimal("0")
+        total_liab = (
+            _to_decimal_or_none(latest_balance.get("totalLiab"))
+            or _to_decimal_or_none(latest_balance.get("totalLiabilities"))
+            or Decimal("1")
+        )
+        sales = _to_decimal_or_none(latest_income.get("totalRevenue")) or Decimal("0")
+        total_assets = (
+            _to_decimal_or_none(latest_balance.get("totalAssets")) or Decimal("1")
+        )
+        net_debt = _to_decimal_or_none(highlights.get("NetDebt")) or Decimal("0")
+        ebitda = (
+            _to_decimal_or_none(highlights.get("EBITDA"))
+            or _to_decimal_or_none(latest_income.get("ebitda"))
+            or Decimal("0")
+        )
+
+        # Quality inputs
+        roe = _to_decimal_or_none(highlights.get("ReturnOnEquityTTM"))
+        roa = _to_decimal_or_none(highlights.get("ReturnOnAssetsTTM"))
+        gross_profit = _to_decimal_or_none(latest_income.get("grossProfit"))
+        gross_margin: Decimal | None = (
+            (gross_profit / sales) if (gross_profit is not None and sales > 0) else None
+        )
+
+        return CompositeScoreInputs(
+            income=IncomeSubScoreInputs(
+                forward_dividend_per_share_jpy=annual_div,
+                current_price_jpy=current_price_jpy,
+                payout_ratio=payout,
+                consecutive_dividend_years=0,  # Phase 3.1b で履歴解析
+                buybacks_4q_jpy=buybacks,
+                market_cap_jpy=market_cap or Decimal("1"),
+                free_cash_flow_jpy=fcf,
+                enterprise_value_jpy=ev,
+                sector=sector,
+            ),
+            risk=RiskSubScoreInputs(
+                working_capital_jpy=wc,
+                retained_earnings_jpy=re,
+                ebit_jpy=ebit,
+                market_cap_jpy=market_cap or Decimal("1"),
+                total_liabilities_jpy=total_liab,
+                sales_jpy=sales,
+                total_assets_jpy=total_assets,
+                net_debt_jpy=net_debt,
+                ebitda_jpy=ebitda,
+                short_interest_pct=None,
+                consecutive_loss_years=0,  # Phase 3.1b
+                beneish_m_score=None,
+            ),
+            quality=QualitySubScoreInputs(
+                roe=roe, roa=roa, gross_margin=gross_margin
+            ),
+            sentiment_score=sentiment_score,
+            sentiment_confidence=sentiment_confidence,
+            momentum_12m_return=momentum_12m,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +556,31 @@ with st.sidebar:
             + " を設定。"
         )
 
+    st.subheader("📋 Composite Score")
+    enable_composite = st.checkbox(
+        "上位銘柄に世界一投資家網羅スコアを併記",
+        value=True,
+        help=(
+            "Phase 3.1a 8 サブスコア（Q/I/R/S）を投資スタイル別プリセットで"
+            "重み付け合算。配当・優待・破綻リスク・センチメントを束ね、"
+            "「素人考えで見落としがち」な軸を網羅する。"
+        ),
+        disabled=not real_mode,
+    )
+    if enable_composite and real_mode:
+        composite_preset = st.selectbox(
+            "投資スタイル",
+            options=list(PRESET_DISPLAY_LABELS.keys()),
+            format_func=lambda k: PRESET_DISPLAY_LABELS[k],
+            index=0,
+            help="\n".join(
+                f"- **{PRESET_DISPLAY_LABELS[k]}**: {PRESET_RATIONALE[k]}"
+                for k in PRESET_DISPLAY_LABELS
+            ),
+        )
+    else:
+        composite_preset = "Buffett_型_暫定"
+
     run_button = st.button(
         "🚀 スクリーニング実行",
         type="primary",
@@ -601,6 +765,108 @@ if run_button:
             )
 
     # ───────────────────────────────────────────────
+    # 📋 Composite Score 詳細（Phase 3.1a — 世界一投資家網羅）
+    # ───────────────────────────────────────────────
+    if enable_composite and real_mode and eodhd_client is not None:
+        st.subheader("📋 Composite Score 詳細（世界一投資家網羅）")
+        st.caption(
+            f"投資スタイル: **{PRESET_DISPLAY_LABELS[composite_preset]}** — "
+            f"{PRESET_RATIONALE[composite_preset]}"
+        )
+
+        composite_rows: list[dict[str, Any]] = []
+        composite_warnings: list[tuple[str, list[Any]]] = []
+        progress = st.progress(0, text="Composite Score 計算中...")
+
+        for idx, (_, mf_row) in enumerate(result.result.iterrows()):
+            ticker_name = str(mf_row["ticker"])
+            ticker_exchange = str(mf_row.get("exchange", exchange))
+            progress.progress(
+                (idx + 1) / len(result.result),
+                text=f"Composite 計算中: {ticker_name} ({idx + 1}/{len(result.result)})",
+            )
+            try:
+                fundamentals = eodhd_client.get_fundamentals(
+                    ticker_name, exchange=ticker_exchange
+                )
+            except Exception:  # noqa: BLE001
+                continue
+
+            # 現在価格は EOD 取得が高コストなので、ファンダの 52w 価格を代用
+            current_price = (
+                _to_decimal_or_none(
+                    fundamentals.get("Highlights", {}).get("MarketCapitalization")
+                )
+                or Decimal("1")
+            ) / max(
+                _to_decimal_or_none(
+                    fundamentals.get("SharesStats", {}).get("SharesOutstanding")
+                )
+                or Decimal("1"),
+                Decimal("1"),
+            )
+
+            inputs = build_composite_inputs_from_fundamentals(
+                fundamentals, current_price_jpy=current_price
+            )
+            if inputs is None:
+                continue
+
+            composite = compute_composite_score(inputs, preset_name=composite_preset)
+            warning_severity = (
+                "🚨" if any(w.severity == "RED" for w in composite.warnings)
+                else ("⚠️" if composite.warnings else "✅")
+            )
+            composite_rows.append(
+                {
+                    "ティッカー": ticker_name,
+                    "Composite": f"{composite.composite_score:.1f}",
+                    "Q": f"{composite.sub_scores['Q']:.0f}",
+                    "I": f"{composite.sub_scores['I']:.0f}",
+                    "R": f"{composite.sub_scores['R']:.0f}",
+                    "S": f"{composite.sub_scores['S']:.0f}",
+                    "警告": warning_severity,
+                }
+            )
+            if composite.warnings:
+                composite_warnings.append(
+                    (ticker_name, list(composite.warnings))
+                )
+
+        progress.empty()
+
+        if composite_rows:
+            st.dataframe(
+                pd.DataFrame(composite_rows).sort_values(
+                    "Composite", ascending=False
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            if composite_warnings:
+                with st.expander(
+                    f"⚠️ 警告詳細（{len(composite_warnings)} 銘柄）"
+                ):
+                    for tk, warns in composite_warnings:
+                        st.markdown(f"**{tk}**")
+                        for w in warns:
+                            icon = (
+                                "🚨" if w.severity == "RED"
+                                else ("⚠️" if w.severity == "AMBER" else "ℹ️")
+                            )
+                            st.markdown(f"- {icon} `{w.code}`: {w.message}")
+            st.caption(
+                "Q=Quality / I=Income / R=Risk / S=Sentiment（各 0-100）。"
+                "Composite はプリセット重み付け合算（0-100）。"
+                "詳細設計: `docs/long-term-investment-architecture.md`"
+            )
+        else:
+            st.info(
+                "Composite Score を計算できる銘柄がありませんでした"
+                "（ファンダ取得失敗 or 必須フィールド欠損）"
+            )
+
+    # ───────────────────────────────────────────────
     # リスク警告（CLAUDE.md §9.4 / §9.7）
     # ───────────────────────────────────────────────
     risk_messages = [
@@ -613,6 +879,11 @@ if run_button:
     if enable_news_cards:
         risk_messages.append(
             "**センチメントは補助情報**: ニュース要約は判断の補助、最終判断は自分で"
+        )
+    if enable_composite and real_mode:
+        risk_messages.append(
+            "**Composite Score は Phase 3.1a 暫定**: ROIC/WACC・連続増配年数・"
+            "13F 機関投資家保有・優待は Phase 3.1b/3.2 で精緻化予定"
         )
     st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
 
