@@ -47,6 +47,12 @@ from .subscores.sentiment import (
     SentimentSubScoreResult,
     compute_sentiment_subscore,
 )
+from .subscores.value import (
+    ValueSubScoreInputs,
+    ValueSubScoreResult,
+    calculate_earnings_yield,
+    compute_value_subscore,
+)
 from .warnings import CompositeWarning, evaluate_warnings
 
 __all__ = [
@@ -71,6 +77,10 @@ __all__ = [
     "compute_risk_subscore",
     "SentimentSubScoreResult",
     "compute_sentiment_subscore",
+    "ValueSubScoreInputs",
+    "ValueSubScoreResult",
+    "calculate_earnings_yield",
+    "compute_value_subscore",
     # Warnings
     "CompositeWarning",
     "evaluate_warnings",
