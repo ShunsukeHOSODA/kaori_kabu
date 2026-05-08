@@ -1,4 +1,4 @@
-"""Magic Formula スクリーナーページ — Greenblatt のバリュー戦略。
+"""Magic Formula スクリーナー — Greenblatt のバリュー戦略 + 推奨根拠カード。
 
 CLAUDE.md §9.3 / §9.4 / §9.8 に準拠:
     - 一本線予測禁止（ランキング合算スコアで提示）
@@ -10,22 +10,39 @@ CLAUDE.md §9.3 / §9.4 / §9.8 に準拠:
     - **EODHD ライブ**: ``settings.eodhd_api_key`` ありで有効。ティッカーを
       指定するとファンダメンタルを取得して Magic Formula を計算する。
       取得結果は TTL 7 日でローカルキャッシュ（CLAUDE.md §9.2）。
+
+Phase 2 推奨根拠カード:
+    Tavily/Exa + Claude Haiku キーが揃えば、結果上位 5 銘柄について
+    自動でニュース 4 系統 + 投資家レンズ（Buffett-Munger / Burry 既定）+
+    センチメント分析を実行し、各銘柄の「なぜ推すか」をカードで併記する。
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from src.analysis.investor_lenses import INVESTOR_LENSES, apply_lenses
 from src.analysis.magic_formula import (
     MagicFormulaResult,
     screen_magic_formula_with_provenance,
 )
+from src.analysis.sentiment import (
+    SentimentResult,
+    analyze_sentiment,
+)
 from src.config.settings import settings
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDClient
+from src.data.news import MarketContext, NewsClient
+from src.ui.components import (
+    format_lenses_applied,
+    format_sentiment_emoji,
+    format_sentiment_label,
+)
 
 st.set_page_config(
     page_title="Magic Formula — kaori_kabu", page_icon="📊", layout="wide"
@@ -100,6 +117,29 @@ def get_eodhd_client() -> EODHDClient | None:
     return EODHDClient(api_key=settings.eodhd_api_key, cache=cache)
 
 
+@st.cache_resource
+def get_news_client() -> NewsClient | None:
+    """Tavily/Exa キーが揃っているときだけ NewsClient を生成（Phase 2）。"""
+    if not settings.tavily_api_key or not settings.exa_api_key:
+        return None
+    cache = ParquetCache(base_dir=settings.cache_dir)
+    return NewsClient(
+        tavily_api_key=settings.tavily_api_key,
+        exa_api_key=settings.exa_api_key,
+        cache=cache,
+    )
+
+
+@st.cache_resource
+def get_anthropic_client():  # noqa: ANN201 — anthropic.Anthropic を返す
+    """``ANTHROPIC_API_KEY`` があるときだけ Anthropic クライアント生成。"""
+    if not settings.anthropic_api_key:
+        return None
+    import anthropic  # noqa: PLC0415 — オプショナル機能の lazy import
+
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+
 def fetch_real_universe(
     client: EODHDClient,
     tickers: list[str],
@@ -140,12 +180,163 @@ def parse_tickers(raw: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# 推奨根拠分析（Phase 2）
+# ---------------------------------------------------------------------------
+
+
+def analyze_recommendation_for_ticker(
+    ticker: str,
+    *,
+    news_client: NewsClient,
+    anthropic_client: Any,
+    lenses: tuple[str, ...],
+) -> tuple[MarketContext, SentimentResult, pd.DataFrame] | None:
+    """単一銘柄について 4 系統 + レンズ + センチメント分析を実行。
+
+    例外時は ``None`` を返してカードを「分析失敗」表示にする。
+    """
+    try:
+        market_context = news_client.gather_market_context(ticker)
+        lens_df = (
+            apply_lenses(news_client, ticker=ticker, lenses=lenses)
+            if lenses
+            else pd.DataFrame()
+        )
+        combined = pd.concat(
+            [
+                market_context.ticker_news,
+                market_context.macro_news,
+                market_context.geopolitical_news,
+                market_context.research,
+                lens_df,
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+        sentiment = analyze_sentiment(
+            combined, ticker=ticker, anthropic_client=anthropic_client
+        )
+    except Exception:  # noqa: BLE001 — UI 側で安全に失敗表示
+        return None
+    return market_context, sentiment, combined
+
+
+def render_recommendation_card(
+    *,
+    rank: int,
+    ticker: str,
+    magic_formula_row: dict[str, Any],
+    market_context: MarketContext | None,
+    sentiment: SentimentResult,
+    lenses_applied: tuple[str, ...],
+) -> None:
+    """推奨根拠カード 1 枚を描画（結果テーブル直下に並ぶ）。"""
+    score = sentiment.sentiment_score
+    emoji = format_sentiment_emoji(score)
+    label = format_sentiment_label(score)
+
+    rank_emoji = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
+    rank_label = rank_emoji[rank - 1] if rank <= len(rank_emoji) else f"#{rank}"
+
+    with st.container(border=True):
+        # ヘッダー: ランク + ティッカー + Magic Formula スコア + センチメント
+        header_cols = st.columns([1, 4, 3])
+        with header_cols[0]:
+            st.markdown(f"### {rank_label}")
+        with header_cols[1]:
+            st.markdown(f"### **{ticker}**")
+            mf = magic_formula_row
+            st.caption(
+                f"Magic Formula スコア `{mf.get('magic_formula_score', '—')}` ／ "
+                f"ROC `{mf.get('roc', '—')}` ／ EY `{mf.get('earnings_yield', '—')}`"
+                + (
+                    f"\nセクター: {mf.get('sector')}"
+                    if mf.get("sector")
+                    else ""
+                )
+            )
+        with header_cols[2]:
+            st.markdown(f"### {emoji} {label}")
+            st.caption(
+                f"score `{score}` / conf `{sentiment.confidence}`"
+            )
+
+        # 要約（推奨根拠の中心）
+        if sentiment.summary:
+            st.markdown(f"💡 **推奨根拠**: {sentiment.summary}")
+
+        # 主要テーマ + リスクシグナル
+        cols = st.columns(2)
+        with cols[0]:
+            if sentiment.key_themes:
+                st.markdown("**主要テーマ**")
+                for theme in sentiment.key_themes:
+                    st.markdown(f"- {theme}")
+            else:
+                st.caption("主要テーマ: —")
+        with cols[1]:
+            if sentiment.risk_signals:
+                st.markdown("⚠️ **リスクシグナル**")
+                for signal in sentiment.risk_signals:
+                    st.markdown(f"- {signal}")
+            else:
+                st.caption("リスクシグナル: —")
+
+        # 適用レンズ + ソース URL
+        if lenses_applied:
+            st.caption(f"適用レンズ: {format_lenses_applied(lenses_applied)}")
+
+        if market_context is not None:
+            all_news = pd.concat(
+                [
+                    market_context.ticker_news,
+                    market_context.macro_news,
+                    market_context.geopolitical_news,
+                    market_context.research,
+                ],
+                ignore_index=True,
+                sort=False,
+            )
+            if len(all_news) > 0 and "url" in all_news.columns:
+                with st.expander(f"🔗 ソース URL ({len(all_news)} 件、上位 5 表示)"):
+                    for _, row in all_news.head(5).iterrows():
+                        title = str(row.get("title", "")).strip()
+                        url = str(row.get("url", "")).strip()
+                        if url and url != "nan":
+                            st.markdown(f"- [{title or url}]({url})")
+
+        # Provenance（CLAUDE.md §9.8.5 必須）
+        with st.expander("ⓘ 出所追跡情報"):
+            md = sentiment.metadata
+            st.json(
+                {
+                    "model_version": md.model_version,
+                    "calculation_method": md.calculation_method,
+                    "input_news_count": md.input_news_count,
+                    "academic_source": md.academic_source,
+                    "calculated_at": md.calculated_at.isoformat(),
+                    "code_commit": md.code_commit,
+                    "lenses_applied": list(lenses_applied),
+                }
+            )
+
+
+# ---------------------------------------------------------------------------
 # サイドバー UI
 # ---------------------------------------------------------------------------
 
 
 eodhd_client = get_eodhd_client()
 api_available = eodhd_client is not None
+news_client = get_news_client()
+anthropic_client = get_anthropic_client()
+news_features_available = (
+    news_client is not None and anthropic_client is not None
+)
+
+# 推奨根拠カードに自動分析する銘柄数（待ち時間を許容、視界に収まる粒度のベスト）
+TOP_PICKS_FOR_NEWS: int = 5
+DEFAULT_NEWS_LENSES: tuple[str, ...] = ("Buffett_Munger", "Burry")
 
 with st.sidebar:
     st.subheader("データソース")
@@ -199,6 +390,31 @@ with st.sidebar:
     )
 
     top_n = st.slider("上位 N 銘柄", 1, 30, min(settings.mf_top_n, 30))
+
+    st.subheader("📰 推奨根拠カード")
+    if news_features_available:
+        enable_news_cards = st.checkbox(
+            f"上位 {TOP_PICKS_FOR_NEWS} 銘柄を自動分析",
+            value=True,
+            help=(
+                "Tavily/Exa で 4 系統ニュース取得 + Buffett-Munger と Burry "
+                "レンズ + Claude Haiku でセンチメント分析。"
+                "「なぜ推すか」を結果テーブル直下のカードに表示。"
+            ),
+        )
+    else:
+        enable_news_cards = False
+        missing: list[str] = []
+        if news_client is None:
+            missing.append("`TAVILY_API_KEY` & `EXA_API_KEY`")
+        if anthropic_client is None:
+            missing.append("`ANTHROPIC_API_KEY`")
+        st.caption(
+            "ℹ️ 推奨根拠カードを有効化するには `.env` または `~/.claude/.env` に "
+            + " と ".join(missing)
+            + " を設定。"
+        )
+
     run_button = st.button(
         "🚀 スクリーニング実行",
         type="primary",
@@ -232,8 +448,10 @@ if run_button:
             )
             st.stop()
         data_source = f"EODHD live ({exchange})"
-        data_period = pd.Timestamp.now(tz="UTC").strftime("fundamentals_as_of_%Y-%m-%d")
-        cache_hit_flag: bool | None = None  # 銘柄毎に異なるため要約不能
+        data_period = pd.Timestamp.now(tz="UTC").strftime(
+            "fundamentals_as_of_%Y-%m-%d"
+        )
+        cache_hit_flag: bool | None = None
     else:
         df = load_demo_universe()
         data_source = "demo_fixture_10_us_large_cap"
@@ -312,6 +530,75 @@ if run_button:
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # ───────────────────────────────────────────────
+    # 推奨根拠カード（Phase 2: ニュース・センチメント・レンズ統合）
+    # ───────────────────────────────────────────────
+    if (
+        enable_news_cards
+        and news_client is not None
+        and anthropic_client is not None
+    ):
+        st.subheader(f"📋 上位 {TOP_PICKS_FOR_NEWS} 銘柄の推奨根拠")
+        st.caption(
+            f"Tavily/Exa で 4 系統ニュース取得 + 投資家レンズ "
+            f"({format_lenses_applied(DEFAULT_NEWS_LENSES)}) + Claude Haiku "
+            "でセンチメント分析。「なぜ推すか」の根拠をカードで併記。"
+        )
+
+        top_picks = result.result.head(TOP_PICKS_FOR_NEWS)
+        progress = st.progress(0, text="推奨根拠を分析中...")
+
+        analyses: list[tuple[int, str, dict[str, Any], Any]] = []
+        for idx, (_, mf_row) in enumerate(top_picks.iterrows()):
+            ticker_name = str(mf_row["ticker"])
+            progress.progress(
+                (idx + 1) / len(top_picks),
+                text=f"分析中: {ticker_name} ({idx + 1}/{len(top_picks)})",
+            )
+            analysis = analyze_recommendation_for_ticker(
+                ticker_name,
+                news_client=news_client,
+                anthropic_client=anthropic_client,
+                lenses=DEFAULT_NEWS_LENSES,
+            )
+            analyses.append((idx + 1, ticker_name, mf_row.to_dict(), analysis))
+
+        progress.empty()
+
+        for rank, ticker_name, mf_dict, analysis in analyses:
+            if analysis is None:
+                with st.container(border=True):
+                    st.markdown(f"### {rank}️⃣ **{ticker_name}**")
+                    st.warning(
+                        "⚠️ ニュース・センチメント分析に失敗。"
+                        "API キー / レート制限 / ネットワークを確認してください。"
+                    )
+                continue
+            mc, sent, _ = analysis
+            # market_cap などの Decimal を表示用に整形
+            mf_display = {
+                "magic_formula_score": mf_dict.get("magic_formula_score", "—"),
+                "roc": (
+                    f"{float(mf_dict['roc']) * 100:.2f}%"
+                    if "roc" in mf_dict
+                    else "—"
+                ),
+                "earnings_yield": (
+                    f"{float(mf_dict['earnings_yield']) * 100:.2f}%"
+                    if "earnings_yield" in mf_dict
+                    else "—"
+                ),
+                "sector": mf_dict.get("sector", ""),
+            }
+            render_recommendation_card(
+                rank=rank,
+                ticker=ticker_name,
+                magic_formula_row=mf_display,
+                market_context=mc,
+                sentiment=sent,
+                lenses_applied=DEFAULT_NEWS_LENSES,
+            )
+
+    # ───────────────────────────────────────────────
     # リスク警告（CLAUDE.md §9.4 / §9.7）
     # ───────────────────────────────────────────────
     risk_messages = [
@@ -321,6 +608,10 @@ if run_button:
     ]
     if not real_mode:
         risk_messages.insert(0, "**デモデータ**: このページは合成 10 銘柄のサンプルです")
+    if enable_news_cards:
+        risk_messages.append(
+            "**センチメントは補助情報**: ニュース要約は判断の補助、最終判断は自分で"
+        )
     st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
 
 else:
@@ -342,15 +633,25 @@ with st.expander("📚 Magic Formula について（学習）"):
         - **組み合わせる理由**: 良い会社は普通高い。両方が高い銘柄は
           「割安に放置されている良い会社」= 逆境にあるが本質的に強い会社
 
+        ### Phase 2 推奨根拠カード
+
+        - 上位 5 銘柄について Tavily/Exa で銘柄ニュース・マクロ・地政学・
+          研究の 4 系統 + 投資家レンズ（Buffett-Munger 質×価値、Burry
+          テールリスク）を取得
+        - Claude Haiku で Tetlock 2007 流のセンチメント定量化
+        - 「なぜ推すか」の根拠をカード形式でランキング横に併記
+
         ### リスク
 
         - **Value Trap**: 構造不況業種は永久に割安なまま
         - **直近 5 年は SP500 にアンダーパフォーム**: 規律保つことが必要
         - **金融・公益・エネルギー除外**: ROC 計算が異質なため
+        - **センチメント補助**: ニュース要約は判断補助、最終判断は自分
 
         ### 学習リソース
 
         - Greenblatt "The Little Book That Still Beats the Market"
         - Montier 2006 "The Little Book of Behavioral Investing"
+        - Tetlock 2007 "Giving Content to Investor Sentiment"
         """
     )
