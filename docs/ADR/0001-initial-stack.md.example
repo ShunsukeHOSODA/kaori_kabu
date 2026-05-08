@@ -1,0 +1,70 @@
+# ADR-0001: 初期技術スタック選定
+
+- **Status**: accepted
+- **Date**: 2026-01-15
+- **Decider(s)**: @ShunsukeHOSODA
+- **Tags**: frontend, backend, infra
+
+## Context
+
+新規 Web アプリの開発を始めるにあたり、フロントエンド・バックエンド・インフラの技術スタックを決定する必要がある。
+
+要件:
+- 個人・小規模チーム開発（ただし将来チーム拡大可能性）
+- 高速な MVP 立ち上げ
+- 型安全性
+- パフォーマンス（Core Web Vitals 達成）
+- ベンダーロックイン回避
+
+## Decision
+
+**Next.js 14 (App Router) + TypeScript + Tailwind + Hono + Drizzle + PostgreSQL on Vercel + Supabase**
+
+## Considered Options
+
+### Option A: Next.js + Vercel + Supabase
+
+- **Pros**: 統合 DX、エッジ対応、最速立ち上がり
+- **Cons**: Vercel ロックイン、サーバーレス制約
+
+### Option B: Remix + Cloudflare Pages + D1
+
+- **Pros**: フレームワーク思想がシンプル、エッジ性能、安価
+- **Cons**: エコシステムが小さい、SQL 制約
+
+### Option C: SvelteKit + Self-host (VPS)
+
+- **Pros**: コードサイズ最小、サーバーフル機能
+- **Cons**: 運用負担、エコシステムが他より小
+
+## Consequences
+
+### Positive
+
+- DX 最高、コミュニティ最大
+- 静的 + 動的混在で柔軟
+- TypeScript エコシステム最強
+
+### Negative
+
+- Vercel コスト（スケール時の懸念）
+- Next.js のメジャーアップグレード追従コスト
+
+### Neutral
+
+- App Router は学習コスト中
+
+## Implementation
+
+- [x] Next.js プロジェクト初期化
+- [x] TypeScript strict mode
+- [x] Tailwind CSS 設定
+- [x] shadcn/ui セットアップ
+- [x] Hono API ルート
+- [x] Drizzle + PostgreSQL（Supabase）
+- [x] Vercel デプロイ設定
+
+## References
+
+- https://vercel.com/blog/comparing-vercel-vs-self-hosting
+- https://nextjs.org/docs

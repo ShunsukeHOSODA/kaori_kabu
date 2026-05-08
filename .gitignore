@@ -1,0 +1,150 @@
+# ============================================================
+# kaori_kabu .gitignore
+# Python ベース + 個人投資データを完全除外
+# ============================================================
+
+# === 環境変数・秘密情報 ===
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.staging
+*.pem
+*.key
+*.cert
+*-secrets.*
+secrets/
+
+# === 個人投資データ（絶対 commit 禁止）===
+data/holdings/
+data/decision-log/
+data/cache/
+data/raw/
+data/exports/
+*.parquet
+!tests/**/*.parquet
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+.venv/
+venv/
+env/
+ENV/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
+.hypothesis/
+.cache/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+*.ipynb_meta
+notebooks/exploration/
+notebooks/scratch/
+
+# === パッケージマネージャ ===
+.uv-cache/
+poetry.lock.bak
+pip-log.txt
+pip-delete-this-directory.txt
+
+# === Streamlit ===
+.streamlit/secrets.toml
+
+# === ビルド・配布 ===
+dist/
+build/
+out/
+*.whl
+*.tar.gz
+
+# === IDE / エディタ ===
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.fleet/
+.cursor/
+.zed/
+
+# === OS ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# === ログ ===
+*.log
+logs/
+log/
+
+# === テストカバレッジ ===
+coverage/
+.nyc_output/
+test-results/
+htmlcov/
+
+# === Claude Code セッション ===
+.claude/projects/
+.claude/sessions/
+.claude/cache/
+.claude/image-cache/
+.claude/.session-stats.json
+.omc/state/
+.omc/sessions/
+
+# === Database ===
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.duckdb
+*.duckdb.wal
+
+# === 一時ファイル ===
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.tmp/
+
+# === graphify ===
+# graphify-out/ は意図的に commit する場合あり
+
+# === プロジェクト固有 ===
+# QuantStats レポート出力
+reports/
+*.html
+!docs/**/*.html
+
+# vectorbt キャッシュ
+.vectorbt_cache/
+
+# モデルチェックポイント
+models/
+*.pkl
+*.joblib
+!tests/fixtures/*.pkl

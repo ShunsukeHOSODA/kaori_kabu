@@ -1,0 +1,18 @@
+# CODEOWNERS — PR の自動レビュアー割当
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# デフォルト（全ファイルのオーナー）
+*       @{オーナー}
+
+# CLAUDE.md / docs/ などプロジェクト方針系は厳格レビュー
+/CLAUDE.md          @{オーナー}
+/AGENTS.md          @{オーナー}
+/docs/              @{オーナー}
+
+# CI / インフラ
+/.github/           @{オーナー}
+/scripts/           @{オーナー}
+
+# セキュリティ感応領域（例）
+/src/auth/          @{オーナー} @{セキュリティ担当}
+/src/payment/       @{オーナー} @{セキュリティ担当}

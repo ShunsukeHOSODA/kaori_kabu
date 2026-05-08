@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# 開発環境の初回セットアップ
+#
+# 使い方:
+#   bash scripts/setup.sh
+
+set -euo pipefail
+
+echo "🚀 Setting up development environment..."
+
+# ===== 1. 必須ツール確認 =====
+echo ""
+echo "1. Checking required tools..."
+
+required_tools=(node pnpm git gh jq)
+missing=()
+for tool in "${required_tools[@]}"; do
+  if ! command -v "$tool" &> /dev/null; then
+    missing+=("$tool")
+  fi
+done
+
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "✗ Missing tools: ${missing[*]}"
+  echo "  Install: brew install ${missing[*]}"
+  exit 1
+fi
+echo "✓ All required tools present"
+
+# ===== 2. .env =====
+echo ""
+echo "2. Setting up .env..."
+
+if [ ! -f .env ]; then
+  cp .env.example .env
+  echo "✓ Created .env from .env.example"
+  echo "  ⚠️  Please edit .env with actual values"
+else
+  echo "✓ .env already exists"
+fi
+
+# ===== 3. 依存関係 =====
+echo ""
+echo "3. Installing dependencies..."
+pnpm install --frozen-lockfile
+echo "✓ Dependencies installed"
+
+# ===== 4. DB セットアップ（必要なら）=====
+if [ -f docker-compose.yml ]; then
+  echo ""
+  echo "4. Starting docker services..."
+  docker compose up -d
+  echo "✓ Docker services started"
+
+  echo ""
+  echo "5. Running migrations..."
+  pnpm db:migrate
+  echo "✓ Migrations applied"
+
+  if [ -f scripts/seed.ts ]; then
+    echo ""
+    echo "6. Seeding database..."
+    pnpm db:seed
+    echo "✓ Database seeded"
+  fi
+fi
+
+# ===== 7. git hooks =====
+echo ""
+echo "7. Setting up git hooks..."
+if [ -f node_modules/.bin/lefthook ]; then
+  pnpm exec lefthook install
+  echo "✓ Git hooks installed"
+fi
+
+# ===== 8. 初回 build 確認 =====
+echo ""
+echo "8. Verifying initial build..."
+pnpm typecheck
+echo "✓ Type check passed"
+
+echo ""
+echo "🎉 Setup complete!"
+echo ""
+echo "Next steps:"
+echo "  - Edit .env with actual values"
+echo "  - Run 'pnpm dev' to start development server"
+echo "  - Run 'claude' to start Claude Code session"
+echo "  - Read docs/onboarding.md for full guide"

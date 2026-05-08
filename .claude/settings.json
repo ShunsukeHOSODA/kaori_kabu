@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "_comment": "プロジェクト固有 Claude Code 設定。グローバル ~/.claude/settings.json を継承し、ここで上書き・追加する。hook はプロジェクト固有の品質ゲート（fmt/typecheck/test）に絞る。",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f graphify-out/graph.json ] && echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"graphify: Knowledge graph exists. Read graphify-out/GRAPH_REPORT.md for god nodes and community structure before searching raw files.\"}}' || true"
+          }
+        ],
+        "description": "graphify-out/ がある場合に context として注入"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f package.json && (jq -e '.scripts.format' package.json > /dev/null 2>&1 && npm run format --silent -- \"$CLAUDE_FILE_PATH\" 2>/dev/null) || true",
+            "description": "JS/TS ファイル編集後に format（package.json に format script があれば）"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f package.json && (jq -e '.scripts.lint' package.json > /dev/null 2>&1 && npm run lint --silent -- \"$CLAUDE_FILE_PATH\" 2>/dev/null) || true",
+            "description": "JS/TS ファイル編集後に lint（package.json に lint script があれば）"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f package.json && jq -e '.scripts.typecheck' package.json > /dev/null 2>&1 && npm run typecheck --silent 2>&1 | tail -20 || true",
+            "description": "セッション終了時に typecheck（バッチで一度だけ）",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  },
+  "_permissions_example": {
+    "_comment": "高頻度の安全コマンドは allow に登録すると permission prompt が減る",
+    "allow": [
+      "Bash(npm run *:*)",
+      "Bash(pnpm *:*)",
+      "Bash(yarn *:*)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)"
+    ]
+  }
+}

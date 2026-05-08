@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# 全テスト実行（unit + integration + e2e + lint + typecheck）
+#
+# 使い方:
+#   bash scripts/test-all.sh           # 全部
+#   bash scripts/test-all.sh fast      # E2E スキップ
+#   bash scripts/test-all.sh ci        # CI 用（全部 + coverage upload）
+
+set -euo pipefail
+
+MODE="${1:-all}"
+START=$(date +%s)
+
+echo "🧪 Running all checks (mode: $MODE)..."
+
+run_step() {
+  local name="$1"
+  shift
+  echo ""
+  echo "▶ $name"
+  if "$@"; then
+    echo "  ✓ $name passed"
+  else
+    echo "  ✗ $name failed"
+    return 1
+  fi
+}
+
+# ===== Lint =====
+run_step "Lint" pnpm lint
+
+# ===== Type check =====
+run_step "Type check" pnpm typecheck
+
+# ===== Unit tests =====
+if [ "$MODE" = "ci" ]; then
+  run_step "Unit + Integration tests (with coverage)" pnpm test --coverage
+else
+  run_step "Unit + Integration tests" pnpm test
+fi
+
+# ===== E2E tests =====
+if [ "$MODE" != "fast" ]; then
+  run_step "E2E tests" pnpm test:e2e
+fi
+
+# ===== Build =====
+run_step "Build" pnpm build
+
+# ===== Security audit =====
+run_step "Security audit" pnpm audit --audit-level=high
+
+END=$(date +%s)
+ELAPSED=$((END - START))
+
+echo ""
+echo "🎉 All checks passed in ${ELAPSED}s"

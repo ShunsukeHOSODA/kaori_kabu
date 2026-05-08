@@ -1,0 +1,24 @@
+{
+  "recommendations": [
+    "biomejs.biome",
+    "bradlc.vscode-tailwindcss",
+    "dbaeumer.vscode-eslint",
+    "yoavbls.pretty-ts-errors",
+    "ms-playwright.playwright",
+    "github.copilot",
+    "github.copilot-chat",
+    "anthropic.claude-code",
+    "editorconfig.editorconfig",
+    "redhat.vscode-yaml",
+    "yzhang.markdown-all-in-one",
+    "bierner.markdown-mermaid",
+    "humao.rest-client",
+    "supermaven.supermaven",
+    "usernamehw.errorlens",
+    "wallabyjs.console-ninja",
+    "stivo.tailwind-fold"
+  ],
+  "unwantedRecommendations": [
+    "esbenp.prettier-vscode"
+  ]
+}

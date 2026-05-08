@@ -1,0 +1,98 @@
+---
+name: deploy
+description: 本番デプロイ前の最終チェックリストを実行し、安全に deploy する。typecheck / test / build / security audit / migration plan を全部走らせて、問題なければ deploy 提案。
+allowed-tools: Bash, Read, Grep
+---
+
+# /deploy — 本番デプロイ前最終チェック + 実行
+
+## チェックフェーズ（順次実行、1 つでも fail なら停止）
+
+### 1. ローカル状態確認
+- [ ] `git status` で uncommitted な変更がないか
+- [ ] `git log origin/main..HEAD` で未 push commit があれば push を促す
+- [ ] 現在のブランチが `main` か（feature ブランチ → PR 経由）
+
+### 2. テスト
+- [ ] `npm test` 実行、カバレッジ目標到達確認
+- [ ] テスト失敗があれば即停止
+
+### 3. 型チェック
+- [ ] `npm run typecheck` でエラー 0 確認
+
+### 4. ビルド
+- [ ] `npm run build`
+- [ ] バンドルサイズが `docs/performance.md` の目標内
+
+### 5. セキュリティ
+- [ ] `npm audit` の HIGH/CRITICAL 確認
+- [ ] secret 混入チェック（`security-reviewer` agent 起動）
+- [ ] `.env` 含む変更がないか
+
+### 6. マイグレーション（DB 変更含む場合）
+- [ ] 後方互換性（rollback 可能か）
+- [ ] データ消失リスクなし
+- [ ] production data サイズで実行時間 OK
+
+### 7. 観測性
+- [ ] Sentry DSN が production 値
+- [ ] OTel service name 正しい
+
+## デプロイ実行
+
+すべて pass したら：
+
+```bash
+# Vercel
+vercel --prod
+
+# Cloudflare Pages
+wrangler pages deploy
+
+# Railway
+railway up
+
+# GitHub Actions
+gh workflow run deploy.yml -f env=production
+```
+
+## デプロイ後検証
+
+- [ ] `/health` が 200
+- [ ] 主要エンドポイント smoke test
+- [ ] Sentry / Datadog で 5 分エラー上昇なし
+- [ ] Core Web Vitals 劣化なし
+
+## 異常時のロールバック
+
+詳細: [`docs/runbooks/rollback.md`](../../docs/runbooks/rollback.md)
+
+```bash
+vercel rollback   # Vercel
+git revert HEAD --no-edit && git push   # git ベース
+```
+
+## 完了報告フォーマット
+
+```
+## Deploy Status
+### ✅ Checks
+- Tests: PASS (XX/YY tests, ZZ% coverage)
+- Type: PASS (0 errors)
+- Build: PASS (bundle: XXKB)
+- Security: PASS
+### 🚀 Deploy
+- Method / URL / Commit / Time
+### 📊 Post-deploy
+- Health: ✅ / Smoke: ✅ / Error rate: 0.0% / p95: XXXms
+```
+
+## 危険時の停止条件
+
+以下なら deploy を強行せず確認：
+
+- 金曜 17:00 以降（週末対応リスク）
+- 本番ピーク時間帯
+- マイグレーションが `DROP TABLE` / `ALTER COLUMN NOT NULL` を含む
+- 過去 24 時間以内に rollback した
+- main ブランチが behind 状態

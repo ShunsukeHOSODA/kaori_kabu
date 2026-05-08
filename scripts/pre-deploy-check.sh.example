@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# デプロイ前の最終チェック
+#
+# 使い方:
+#   bash scripts/pre-deploy-check.sh
+
+set -euo pipefail
+
+echo "🚀 Pre-deploy check..."
+
+errors=0
+
+check() {
+  local name="$1"
+  shift
+  echo ""
+  echo "▶ $name"
+  if "$@"; then
+    echo "  ✓ pass"
+  else
+    echo "  ✗ FAIL"
+    errors=$((errors + 1))
+  fi
+}
+
+# ===== git 状態 =====
+check "Working tree is clean" bash -c "[ -z \"\$(git status --porcelain)\" ]"
+check "On main branch" bash -c "[ \"\$(git rev-parse --abbrev-ref HEAD)\" = \"main\" ]"
+check "Up-to-date with origin/main" bash -c "git fetch && [ \"\$(git rev-parse @)\" = \"\$(git rev-parse @{u})\" ]"
+
+# ===== テスト =====
+check "Tests pass" pnpm test
+check "Type check pass" pnpm typecheck
+check "Lint pass" pnpm lint
+
+# ===== Build =====
+check "Build succeeds" pnpm build
+
+# ===== Security =====
+check "No high/critical vulnerabilities" pnpm audit --audit-level=high
+
+# ===== マイグレーション =====
+if [ -f scripts/check-migration.sh ]; then
+  check "Migration is backward-compatible" bash scripts/check-migration.sh
+fi
+
+# ===== 環境変数確認 =====
+check "Production env vars set" bash -c "[ -n \"\${VERCEL_TOKEN:-}\" ] || [ -n \"\${DEPLOY_KEY:-}\" ]"
+
+echo ""
+if [ $errors -gt 0 ]; then
+  echo "🔴 Pre-deploy check failed: $errors error(s)"
+  echo "   Fix the issues above before deploying."
+  exit 1
+fi
+
+echo "🟢 Pre-deploy check passed!"
+echo ""
+echo "Next: Run /deploy slash command in Claude Code, or:"
+echo "  vercel --prod                    # Vercel"
+echo "  gh workflow run deploy.yml       # GitHub Actions"

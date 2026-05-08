@@ -1,0 +1,49 @@
+{
+  "_comment": "プロジェクト固有 MCP サーバー設定。`cp .mcp.json.example .mcp.json` で利用。Claude Code がプロジェクト起動時に読む。グローバル ~/.claude.json の MCP と併存できる。",
+  "_docs": "https://docs.claude.com/claude-code/mcp",
+  "_unused_keys_with_underscore_prefix": "実利用時はアンダースコアを外す",
+  "mcpServers": {
+    "_supabase_example": {
+      "_comment": "プロジェクトで Supabase を使う場合の例",
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase@latest"],
+      "env": {
+        "SUPABASE_URL": "${SUPABASE_URL}",
+        "SUPABASE_ANON_KEY": "${SUPABASE_ANON_KEY}"
+      }
+    },
+    "_postgres_example": {
+      "_comment": "ローカル / リモート PostgreSQL 直接アクセス",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "${DATABASE_URL}"]
+    },
+    "_filesystem_example": {
+      "_comment": "プロジェクトディレクトリ限定の filesystem MCP",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "${PWD}"
+      ]
+    },
+    "_browserbase_example": {
+      "_comment": "ブラウザ自動操作（E2E テストや scraping）",
+      "command": "npx",
+      "args": ["-y", "@browserbasehq/mcp-server-browserbase"],
+      "env": {
+        "BROWSERBASE_API_KEY": "${BROWSERBASE_API_KEY}",
+        "BROWSERBASE_PROJECT_ID": "${BROWSERBASE_PROJECT_ID}"
+      }
+    },
+    "_sentry_example": {
+      "_comment": "Sentry エラートラッキング",
+      "command": "npx",
+      "args": ["-y", "@sentry/mcp-server"],
+      "env": {
+        "SENTRY_AUTH_TOKEN": "${SENTRY_AUTH_TOKEN}",
+        "SENTRY_ORG": "${SENTRY_ORG}",
+        "SENTRY_PROJECT": "${SENTRY_PROJECT}"
+      }
+    }
+  }
+}
