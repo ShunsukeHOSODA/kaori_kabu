@@ -506,6 +506,165 @@ class TestEODHDClientErrorHandling:
         assert "403" in message
 
 
+def _build_eod_records(
+    *, today: date, days: int, start_price: float = 100.0, slope: float = 0.5
+) -> list[dict]:
+    """単調増加の合成 EOD レコード列を生成（テスト用）。
+
+    ``slope`` 円/日の単純線形増加。``adjusted_close`` のみ使われるが、
+    EODHDClient.get_eod が ``date`` 列を ``pd.to_datetime`` するので
+    ``date`` も ISO 8601 文字列で含める。
+    """
+    return [
+        {
+            "date": (today - timedelta(days=days - 1 - i)).isoformat(),
+            "open": start_price + i * slope,
+            "high": start_price + i * slope,
+            "low": start_price + i * slope,
+            "close": start_price + i * slope,
+            "adjusted_close": start_price + i * slope,
+            "volume": 1_000_000,
+        }
+        for i in range(days)
+    ]
+
+
+def _make_mock_response(records: list[dict]) -> MagicMock:
+    """``records`` を ``response.json()`` で返す MagicMock を作成。"""
+    response = MagicMock(spec=httpx.Response)
+    response.json.return_value = records
+    response.is_success = True
+    response.raise_for_status.return_value = None
+    return response
+
+
+@pytest.mark.unit
+class TestGetReturns:
+    """12m / 1m リターン（モメンタム）を adjusted_close から計算。
+
+    - 十分な履歴があれば両方計算
+    - 履歴不足の方だけ None（30 日未満なら 1m / 365 日未満なら 12m）
+    - get_eod 経由なのでキャッシュを共有
+    - Decimal で返す（金額・比率は Decimal が CLAUDE.md §9.1 規約）
+    """
+
+    def test_十分な履歴_12mと1m_両方Decimalで返却(
+        self, tmp_path: Path
+    ) -> None:
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        today = date(2026, 5, 9)
+        # 420 日 = 約 14 ヶ月。slope=0.5 で 100 → 309.5 まで単調増加。
+        records = _build_eod_records(today=today, days=420)
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = _make_mock_response(records)
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        returns = client.get_returns("AAPL", as_of=today)
+
+        assert isinstance(returns["return_12m"], Decimal)
+        assert isinstance(returns["return_1m"], Decimal)
+        # latest = 309.5、~365 日前 ≈ 100 + 55*0.5 = 127.5 → 12m return ≈ 1.43
+        assert returns["return_12m"] > Decimal("1.0")
+        # latest = 309.5、~30 日前 ≈ 100 + 390*0.5 = 295 → 1m return ≈ 0.049
+        assert Decimal("0.03") < returns["return_1m"] < Decimal("0.07")
+
+    def test_履歴不足_両方None(self, tmp_path: Path) -> None:
+        """5 日分しかなければ 12m / 1m どちらも None。"""
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        today = date(2026, 5, 9)
+        records = _build_eod_records(today=today, days=5)
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = _make_mock_response(records)
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        returns = client.get_returns("AAPL", as_of=today)
+
+        assert returns["return_12m"] is None
+        assert returns["return_1m"] is None
+
+    def test_履歴2ヶ月_1mのみ返却_12mはNone(self, tmp_path: Path) -> None:
+        """60 日分なら 1m return は出るが 12m は None。"""
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        today = date(2026, 5, 9)
+        records = _build_eod_records(today=today, days=60)
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = _make_mock_response(records)
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        returns = client.get_returns("AAPL", as_of=today)
+
+        assert returns["return_12m"] is None
+        assert returns["return_1m"] is not None
+        assert isinstance(returns["return_1m"], Decimal)
+
+    def test_get_eodキャッシュを共有_2回目はAPI叩かない(
+        self, tmp_path: Path
+    ) -> None:
+        """get_returns は get_eod を呼ぶので 2 回目はキャッシュヒット。"""
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        today = date(2026, 5, 9)
+        records = _build_eod_records(today=today, days=420)
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = _make_mock_response(records)
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        client.get_returns("AAPL", as_of=today)
+        client.get_returns("AAPL", as_of=today)
+
+        # 1 回目で取得し、2 回目は ParquetCache 経由でヒット
+        assert http_client.get.call_count == 1
+
+    def test_過去価格0以下_None_DivisionByZero回避(
+        self, tmp_path: Path
+    ) -> None:
+        """過去価格が 0 以下なら除算回避で None。スプリット未調整異常データ対策。"""
+        from data.cache import ParquetCache
+        from data.eodhd import EODHDClient
+
+        today = date(2026, 5, 9)
+        records = _build_eod_records(today=today, days=420)
+        # 全期間の adjusted_close を 0 に汚染（スプリット未調整異常）
+        for rec in records:
+            rec["adjusted_close"] = 0.0
+        http_client = MagicMock(spec=httpx.Client)
+        http_client.get.return_value = _make_mock_response(records)
+
+        cache = ParquetCache(base_dir=tmp_path)
+        client = EODHDClient(
+            api_key="dummy", cache=cache, http_client=http_client
+        )
+
+        returns = client.get_returns("AAPL", as_of=today)
+
+        # 0 価格しか無ければ None でフォールバック（落ちない）
+        assert returns["return_12m"] is None
+        assert returns["return_1m"] is None
+
+
 @pytest.mark.slow
 class TestEODHDClientIntegration:
     """実 API 接続テスト（EODHD クォータ消費。``pytest -m slow`` で実行）。"""

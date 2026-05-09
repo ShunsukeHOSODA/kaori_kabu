@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -219,6 +219,73 @@ class EODHDClient:
         )
         return payload
 
+    def get_returns(
+        self,
+        ticker: str,
+        *,
+        exchange: str = "US",
+        as_of: date | None = None,
+    ) -> dict[str, Decimal | None]:
+        """12m / 1m モメンタムリターンを ``adjusted_close`` から計算。
+
+        :meth:`get_eod` 経由で過去約 14 ヶ月分の EOD を取得し（24h キャッシュ
+        を共有）、最新営業日と 12m / 1m 前の最近営業日の adjusted_close から
+        ``(P_t / P_{t-N}) - 1`` を Decimal で算出する（CLAUDE.md §9.1）。
+
+        履歴不足のキーは ``None``。例: 60 日履歴なら ``return_1m`` のみ算出、
+        ``return_12m`` は ``None``。
+
+        Args:
+            ticker: ティッカーシンボル
+            exchange: 取引所コード（デフォルト ``US``、東証は ``TO``）
+            as_of: 基準日。未指定なら ``date.today()``。
+
+        Returns:
+            ``{"return_12m": Decimal | None, "return_1m": Decimal | None}``
+        """
+        if as_of is None:
+            as_of = date.today()
+
+        # 14 ヶ月分（休場・週末を考慮して暦日で 420 日）
+        from_date = as_of - timedelta(days=420)
+        df = self.get_eod(
+            ticker,
+            from_date=from_date,
+            to_date=as_of,
+            exchange=exchange,
+        )
+        if (
+            df.empty
+            or "adjusted_close" not in df.columns
+            or "date" not in df.columns
+        ):
+            return {"return_12m": None, "return_1m": None}
+
+        df_sorted = df.sort_values("date").reset_index(drop=True)
+        df_sorted["date"] = pd.to_datetime(df_sorted["date"])
+        latest = df_sorted.iloc[-1]
+        latest_date: pd.Timestamp = latest["date"]
+        latest_price = Decimal(str(latest["adjusted_close"]))
+        if latest_price <= 0:
+            return {"return_12m": None, "return_1m": None}
+
+        return {
+            "return_12m": _compute_horizon_return(
+                df_sorted,
+                latest_date=latest_date,
+                latest_price=latest_price,
+                target_days=365,
+                min_age_days=300,
+            ),
+            "return_1m": _compute_horizon_return(
+                df_sorted,
+                latest_date=latest_date,
+                latest_price=latest_price,
+                target_days=30,
+                min_age_days=20,
+            ),
+        }
+
     def _fundamentals_cache_path(self, ticker: str, exchange: str) -> Path:
         """fundamentals JSON キャッシュのパスを構築。
 
@@ -280,6 +347,43 @@ class EODHDClient:
                     continue
             rows.append(row)
         return pd.DataFrame(rows)
+
+
+def _compute_horizon_return(
+    df: pd.DataFrame,
+    *,
+    latest_date: pd.Timestamp,
+    latest_price: Decimal,
+    target_days: int,
+    min_age_days: int,
+) -> Decimal | None:
+    """``latest_date - target_days`` に最も近い過去行から ``(latest / past) - 1`` を算出。
+
+    ``min_age_days`` より新しい過去行しかない場合は履歴不足として ``None``。
+    過去価格が 0 以下の場合も ``None``（スプリット未調整異常データの除算回避）。
+
+    Args:
+        df: ``date``（pd.Timestamp 化済）と ``adjusted_close`` を持つ DataFrame。
+        latest_date: 最新営業日。
+        latest_price: 最新営業日の adjusted_close（Decimal）。
+        target_days: 過去何日前を狙うか（暦日、12m=365, 1m=30）。
+        min_age_days: 過去行の最小年齢（暦日）。これ未満なら不足扱い。
+
+    Returns:
+        ``Decimal`` リターン（小数、+0.20 = +20%）または ``None``。
+    """
+    target = latest_date - pd.Timedelta(days=target_days)
+    candidates = df[df["date"] <= target]
+    if candidates.empty:
+        return None
+    past_row = candidates.iloc[-1]
+    past_age_days = (latest_date - past_row["date"]).days
+    if past_age_days < min_age_days:
+        return None
+    past_price = Decimal(str(past_row["adjusted_close"]))
+    if past_price <= 0:
+        return None
+    return (latest_price / past_price) - Decimal("1")
 
 
 def extract_magic_formula_row(
