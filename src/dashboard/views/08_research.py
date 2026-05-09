@@ -90,7 +90,7 @@ def _fetch_history(api_key: str, ticker: str, exchange: str) -> pd.DataFrame | N
 
 
 df = _fetch_history(settings.eodhd_api_key, ticker, exchange)
-if df is None or len(df) < 100:
+if df is None or len(df) < 100 or "date" not in df.columns:
     st.error(
         f"`{ticker}.{exchange}` の過去データを取得できませんでした"
         "（または 100 日未満のため分析不可）。"
@@ -98,8 +98,12 @@ if df is None or len(df) < 100:
     )
     st.stop()
 
+# EODHDClient.get_eod は date を **列** として返す（reset_index(drop=True)）
+# ため、df.index は int RangeIndex。可視化用に DateTime Series として取り出す。
+date_series = pd.to_datetime(df["date"])
+
 st.caption(
-    f"📅 期間: {df.index.min().date()} 〜 {df.index.max().date()}"
+    f"📅 期間: {date_series.min().date()} 〜 {date_series.max().date()}"
     f"（{len(df)} 日分、最新終値 {float(df['close'].iloc[-1]):.2f}）"
 )
 
@@ -114,11 +118,11 @@ tab_past, tab_future = st.tabs(["📜 過去検証", "🎲 将来予測"])
 with tab_past:
     st.subheader(f"📜 {ticker} の過去 5 年の値動きとリスク指標")
 
-    # 価格チャート
+    # 価格チャート（x 軸は date 列の DateTime Series）
     fig_price = go.Figure()
     fig_price.add_trace(
         go.Scatter(
-            x=df.index,
+            x=date_series,
             y=df["close"],
             name="終値",
             line={"color": "#1f77b4", "width": 1.5},
@@ -208,8 +212,9 @@ with tab_future:
 
     # 時系列 fan chart
     percentiles = np.percentile(paths, [5, 25, 50, 75, 95], axis=0)
+    last_date = date_series.iloc[-1]
     future_dates = pd.date_range(
-        start=df.index[-1] + pd.Timedelta(days=1), periods=n_days, freq="D"
+        start=last_date + pd.Timedelta(days=1), periods=n_days, freq="D"
     )
 
     fig_mc = go.Figure()
@@ -262,12 +267,13 @@ with tab_future:
             line={"color": "#1f77b4", "width": 2.5},
         )
     )
-    # 過去 1 年を参考表示
-    last_year = df.tail(252)
+    # 過去 1 年を参考表示（x 軸は date Series）
+    last_year_dates = date_series.iloc[-252:]
+    last_year_close = df["close"].iloc[-252:]
     fig_mc.add_trace(
         go.Scatter(
-            x=last_year.index,
-            y=last_year["close"],
+            x=last_year_dates,
+            y=last_year_close,
             name="過去 1 年（参考）",
             line={"color": "#888888", "dash": "dash", "width": 1.2},
         )

@@ -72,12 +72,18 @@ def _detect_market_regime_cached(
         vix = client.get_eod(
             "VIX", exchange="INDX", from_date=from_d, to_date=today_local
         )
-        common = spy.index.intersection(vix.index)
+        # EODHDClient.get_eod は date を **列** として返す（int RangeIndex）。
+        # HMM 学習には日付ベースで SPY と VIX を整合させる必要がある。
+        if "date" not in spy.columns or "date" not in vix.columns:
+            return None
+        spy_close = spy.set_index(pd.to_datetime(spy["date"]))["close"]
+        vix_close = vix.set_index(pd.to_datetime(vix["date"]))["close"]
+        common = spy_close.index.intersection(vix_close.index)
         if len(common) < 100:
             return None
         return detect_regime_with_provenance(
-            prices=spy.loc[common, "close"],
-            vix=vix.loc[common, "close"],
+            prices=spy_close.loc[common],
+            vix=vix_close.loc[common],
             input_data_source="EODHD",
         )
     except (
