@@ -37,7 +37,11 @@ def _welcome_page() -> None:
         """
     )
 
-    st.subheader("🎯 MVP 7 機能")
+    st.subheader("🎯 裏で動く 7 つの統計手法")
+    st.caption(
+        "下記はすべて Claude が**裏で**実行し、結果だけを 🏠 ホーム / 🔍 おすすめ銘柄 / "
+        "🧪 銘柄を調べる に統合表示します。個別タブで触る必要はありません。"
+    )
     # ブラウザ自動翻訳が固有名詞を「グリーンブラット」「バークシャー」等と
     # 翻訳して可読性を破壊するため、英語の人名・社名は `translate="no"` で
     # 囲み、日本語の説明文と分離する。
@@ -69,25 +73,22 @@ def _welcome_page() -> None:
         "用語が分からなくても、目的（やりたいこと）から選べる構成です。"
     )
 
-    # 各サイドバー項目の役割・使うタイミング・素人向け補足を 1 行ずつ
+    # 5 タブの役割・使うタイミング・素人向け補足を 1 行ずつ
     st.markdown(
         """
         | メニュー | 何ができる？ | こんな時に使う |
         |---|---|---|
-        | 🏠 **ホーム** | 保有銘柄一覧と現在価格での評価額・含み損益を確認 | 朝イチで「今いくら？」を見たい時 |
-        | 📊 **割安銘柄探し** | <span translate="no">Greenblatt</span> のマジックフォーミュラ（資本効率 × 割安度）で世界の割安株 Top 10 を抽出 | 新しい買い候補を探したい時 |
-        | 🐋 **達人追従（13F）** | <span translate="no">Berkshire (Buffett) / Pabrai / Burry / Ackman</span> など著名投資家の四半期保有銘柄を SEC から取得 | 「あのプロは今何を持ってる？」を確認 |
-        | 🔬 **過去検証** | 自分の戦略（割安株保有・配当再投資など）を過去データで「もし当時やってたら」を計算 | 戦略の有効性を確かめたい時 |
-        | 🎲 **将来予測** | モンテカルロ法で 1000 通りの未来の値動きを確率分布として描画（「絶対 + ○ 円」予測は禁止） | 「1 年後にいくらになる確率？」を知りたい時 |
-        | 🌍 **マクロ経済** | <span translate="no">Fed</span> 利上げ確率（予測市場）、米景気指標、市場レジーム判定 | 相場全体の温度感を見たい時 |
-        | ⚙️ **設定** | <span translate="no">API</span> キー設定状況、戦略パラメータ、キャッシュ <span translate="no">TTL</span> | データ源や閾値の確認 |
+        | 🏠 **ホーム** | 保有銘柄の評価額・含み損益・**市場の機嫌（信号灯）**・**利確 / 損切りアラート** | 朝イチで「今いくら？売り時？」を見たい時 |
+        | 🔍 **おすすめ銘柄** | <span translate="no">Claude</span> が裏で<span translate="no">Greenblatt</span> + 達人追従（13F）+ マクロ環境 を統合し、**長期 / 中期 / 短期 / 急騰候補** の 4 カテゴリで推薦 | 新しい買い候補を探したい時 |
+        | 🧪 **銘柄を調べる** | 気になるティッカーを入力 → **過去検証**（戦略を過去で回した成績）と **将来予測**（モンテカルロ確率分布）を内部タブで切替 | 個別銘柄を深掘りしたい時 |
+        | ⚙️ **設定** | <span translate="no">API</span> 設定状況・戦略パラメータ・キャッシュ <span translate="no">TTL</span>・口座種別 | 環境を確認したい時 |
         """,
         unsafe_allow_html=True,
     )
 
     st.info(
-        "📌 まずは **🏠 ホーム** で保有銘柄の評価から、"
-        "次に **📊 割安銘柄探し** で新候補を見つける流れがおすすめです。"
+        "📌 まずは **🏠 ホーム** で保有銘柄と市場の機嫌を確認、"
+        "次に **🔍 おすすめ銘柄** で新候補を見つける流れがおすすめです。"
     )
 
     st.divider()
@@ -145,8 +146,10 @@ def main() -> None:
     apply_theme()
     _render_sidebar_status()
 
-    # icon は title 内の emoji を採用（重複表示回避）。url_path は英語維持で
-    # Chrome 翻訳の発火源を抑え、default page (welcome) は root `/` のみ。
+    # 5 タブ構成（要件 .steering/20260509-ui-5tab-redesign/）。
+    # 13F / マクロ / 過去検証 / 将来予測 はナビ非表示。Claude が裏で
+    # おすすめ銘柄計算 / 信号灯 / 銘柄リサーチ統合に使用。ファイルは温存。
+    # url_path は英語維持で Chrome 自動翻訳の発火源を抑える。
     pages = [
         st.Page(_welcome_page, title="📈 ようこそ", default=True),
         st.Page(
@@ -156,28 +159,13 @@ def main() -> None:
         ),
         st.Page(
             str(_PAGES_DIR / "02_screener.py"),
-            title="📊 割安銘柄探し",
+            title="🔍 おすすめ銘柄",
             url_path="screener",
         ),
         st.Page(
-            str(_PAGES_DIR / "03_thirteen_f.py"),
-            title="🐋 達人追従（13F）",
-            url_path="thirteen-f",
-        ),
-        st.Page(
-            str(_PAGES_DIR / "04_backtest.py"),
-            title="🔬 過去検証",
-            url_path="backtest",
-        ),
-        st.Page(
-            str(_PAGES_DIR / "05_monte_carlo.py"),
-            title="🎲 将来予測",
-            url_path="monte-carlo",
-        ),
-        st.Page(
-            str(_PAGES_DIR / "06_macro.py"),
-            title="🌍 マクロ経済",
-            url_path="macro",
+            str(_PAGES_DIR / "08_research.py"),
+            title="🧪 銘柄を調べる",
+            url_path="research",
         ),
         st.Page(
             str(_PAGES_DIR / "07_settings.py"),
