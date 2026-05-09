@@ -25,6 +25,7 @@ import httpx
 import pandas as pd
 import streamlit as st
 
+from src.analysis._provenance import get_current_git_commit
 from src.analysis.regime import RegimeResult, detect_regime_with_provenance
 from src.analysis.risk_metrics import (
     compute_portfolio_returns,
@@ -36,6 +37,7 @@ from src.dashboard.widgets.regime_signal import render_regime_signal
 from src.dashboard.widgets.risk_metrics_panel import render_risk_metrics_panel
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDAPIError, EODHDClient
+from src.portfolio.atr_alert_logger import log_atr_alert
 from src.portfolio.holdings import Portfolio
 from src.portfolio.valuation import (
     evaluate_portfolio,
@@ -377,6 +379,28 @@ if evaluate_button:
 
             warning_alerts = [a for a in atr_alerts if a.status != "safe"]
             safe_alerts = [a for a in atr_alerts if a.status == "safe"]
+
+            # ───────────────────────────────────────────────
+            # Decision Log 自動追記（CLAUDE.md §9.5 / §9.8.3）
+            # breach/near のみ、月内 (ticker, status) 初回のみ記録（重複防止）。
+            # UI には書かない（規律 = 静かに残す、自動売買と誤読されないため）
+            # ───────────────────────────────────────────────
+            _commit_short = get_current_git_commit()
+            _usdjpy = Decimal(str(settings.usdjpy_fallback))
+            _atr_mult = Decimal(str(settings.atr_multiplier))
+            for _alert in warning_alerts:
+                _h = portfolio.by_ticker(_alert.ticker)
+                if _h is not None:
+                    log_atr_alert(
+                        alert=_alert,
+                        holding=_h,
+                        log_dir=settings.decision_log_dir,
+                        usdjpy_rate=_usdjpy,
+                        code_commit=_commit_short,
+                        atr_period=settings.atr_period,
+                        atr_multiplier=_atr_mult,
+                        lookback=settings.trailing_stop_lookback,
+                    )
 
             if warning_alerts:
                 for alert in warning_alerts:
