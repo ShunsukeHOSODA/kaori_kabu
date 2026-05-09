@@ -232,7 +232,7 @@ def composite_radar_chart(
             radialaxis=dict(visible=True, range=[0, 100], tick0=0, dtick=20),
         ),
         showlegend=False,
-        title=dict(text=f"{ticker} — Composite Score 7 軸"),
+        title=dict(text=f"{ticker} — 7 軸 Composite Score"),
         margin=dict(l=40, r=40, t=60, b=40),
         height=380,
     )

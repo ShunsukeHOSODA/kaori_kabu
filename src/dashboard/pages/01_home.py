@@ -36,7 +36,7 @@ st.set_page_config(
 apply_theme()
 
 st.title("🏠 ホーム — 保有銘柄サマリー")
-st.caption("当日の評価額・含み益損を一画面で確認（CLAUDE.md §4）")
+st.caption("当日の評価額と含み損益を一画面で確認できます。")
 
 
 @st.cache_data(ttl=300)
@@ -81,12 +81,12 @@ if len(portfolio.holdings) == 0:
 total_cost = portfolio.total_cost_jpy()
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric("保有銘柄数", f"{len(portfolio.holdings)} 銘柄")
+    st.metric("保有銘柄", f"{len(portfolio.holdings)} 銘柄")
 with col2:
     st.metric("合計取得コスト", f"¥{int(total_cost):,}")
 with col3:
     nisa_count = sum(1 for h in portfolio.holdings if h.account_type == "NISA")
-    st.metric("NISA 口座銘柄", f"{nisa_count} 銘柄")
+    st.metric("NISA 口座", f"{nisa_count} 銘柄")
 
 
 # ───────────────────────────────────────────────
@@ -160,13 +160,14 @@ if evaluate_button:
             ec1, ec2, ec3 = st.columns(3)
             ec1.metric("評価額", f"¥{int(mv):,}")
             ec2.metric(
-                "含み益損",
+                "含み損益",
                 f"¥{int(pnl):,}",
                 delta=f"{float(pnl_pct) * 100:+.2f}%",
             )
             ec3.metric(
-                "USD/JPY (.env 設定値)",
+                "適用為替（USD/JPY）",
                 f"¥{settings.usdjpy_fallback:.2f}",
+                help=".env の USDJPY_FALLBACK を使用しています（Phase 2 で為替 API 化予定）。",
             )
 
             display_df = pd.DataFrame(
@@ -177,7 +178,7 @@ if evaluate_button:
                         "取得平均": f"¥{int(v.avg_cost_jpy):,}",
                         "現在価格": f"¥{float(v.current_price_jpy):,.0f}",
                         "評価額": f"¥{int(v.market_value_jpy):,}",
-                        "含み益損": f"¥{int(v.unrealized_pnl_jpy):,}",
+                        "含み損益": f"¥{int(v.unrealized_pnl_jpy):,}",
                         "損益率": f"{float(v.unrealized_pnl_pct) * 100:+.2f}%",
                     }
                     for v in valuations

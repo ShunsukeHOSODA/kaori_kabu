@@ -22,6 +22,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pandas as pd
 import streamlit as st
 
@@ -29,6 +30,7 @@ from src.analysis.composite import (
     CompositeScoreInputs,
     GrowthSubScoreInputs,
     IncomeSubScoreInputs,
+    MomentumSubScoreInputs,
     PRESET_DISPLAY_LABELS,
     PRESET_RATIONALE,
     QualitySubScoreInputs,
@@ -47,8 +49,9 @@ from src.analysis.sentiment import (
 )
 from src.config.settings import settings
 from src.data.cache import ParquetCache
-from src.data.eodhd import EODHDClient
+from src.data.eodhd import EODHDAPIError, EODHDClient
 from src.data.news import MarketContext, NewsClient
+from src.data.yfinance import YFinanceClient, make_default_yfinance_client
 from src.ui.components import (
     composite_radar_chart,
     format_lenses_applied,
@@ -122,6 +125,10 @@ def load_demo_universe() -> pd.DataFrame:
 def get_eodhd_client() -> EODHDClient | None:
     """``EODHD_API_KEY`` がある場合のみ EODHDClient を生成。
 
+    EOD 価格（Momentum 用）に使う。Fundamentals は `$59.99 単体 / $99.99
+    ALL-IN-ONE` プラン以上が必要なので、本ダッシュボードでは yfinance に
+    委譲する（CLAUDE.md §5 のコスト最小化方針）。
+
     Streamlit の :func:`st.cache_resource` で session 中シングルトン化。
     キーが空なら ``None`` を返し、UI 側で Demo にフォールバックさせる。
     """
@@ -129,6 +136,17 @@ def get_eodhd_client() -> EODHDClient | None:
         return None
     cache = ParquetCache(base_dir=settings.cache_dir)
     return EODHDClient(api_key=settings.eodhd_api_key, cache=cache)
+
+
+@st.cache_resource
+def get_yfinance_client() -> YFinanceClient:
+    """yfinance ベースのファンダメンタルクライアント（無料・無設定）。
+
+    Yahoo Finance の非公式 API を使ってファンダを取得。米国大型株は十分、
+    日本株は欠損があり得るので J-Quants Light 併用が望ましい（Phase 3.2）。
+    """
+    cache = ParquetCache(base_dir=settings.cache_dir)
+    return make_default_yfinance_client(cache)
 
 
 @st.cache_resource
@@ -155,16 +173,18 @@ def get_anthropic_client():  # noqa: ANN201 — anthropic.Anthropic を返す
 
 
 def fetch_real_universe(
-    client: EODHDClient,
+    client: YFinanceClient,
     tickers: list[str],
     *,
     exchange: str,
     excluded_sectors: tuple[str, ...],
     min_market_cap_usd: Decimal,
 ) -> pd.DataFrame:
-    """EODHD ライブで指定ティッカーのファンダから DataFrame を構築。
+    """yfinance ライブで指定ティッカーのファンダから DataFrame を構築。
 
-    取得は :meth:`EODHDClient.build_screener_universe` 経由でフィルタ込み。
+    取得は :meth:`YFinanceClient.build_screener_universe` 経由でフィルタ込み。
+    EODHDClient.build_screener_universe と同シグネチャ・同 dict shape のため、
+    将来 EODHD Fundamentals アップグレード時は注入元を差し替えるだけで済む。
     """
     return client.build_screener_universe(
         tickers,
@@ -210,12 +230,17 @@ def build_composite_inputs_from_fundamentals(
     sentiment_score: Decimal = Decimal("0"),
     sentiment_confidence: Decimal = Decimal("0"),
     momentum_12m: Decimal | None = None,
+    momentum_inputs: MomentumSubScoreInputs | None = None,
 ) -> CompositeScoreInputs | None:
     """EODHD ``/fundamentals/`` の dict から Composite Score 入力を構築。
 
     欠損フィールドは ``None`` / ``Decimal("0")`` で fallback。連続増配年数 /
     連続赤字年数は履歴解析が必要なため Phase 3.1a では 0 固定（Phase 3.1b で
     精緻化）。Beneish M / Short interest は Phase 3.2 で追加。
+
+    ``momentum_inputs`` は :func:`EODHDClient.get_returns` の結果を呼び出し側で
+    包んで渡す（Phase 3.1b で配線）。``None`` のとき Momentum 軸は 0 点。
+    ``momentum_12m`` は警告（Falling Knife）判定で使われ、こちらも省略可。
     """
     try:
         general = fundamentals.get("General", {})
@@ -322,11 +347,38 @@ def build_composite_inputs_from_fundamentals(
                 ebit_jpy=ebit if ebit > 0 else None,
                 enterprise_value_jpy=ev,
             ),
-            # Growth/Momentum は Phase 3.1b 後追いで EODHD CAGR + 価格履歴呼び出し
             growth=_build_growth_inputs(highlights, income_yearly),
+            momentum=momentum_inputs,
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _fetch_momentum_inputs(
+    client: EODHDClient,
+    ticker: str,
+    *,
+    exchange: str,
+) -> MomentumSubScoreInputs | None:
+    """EODHD ``get_returns`` を呼んで :class:`MomentumSubScoreInputs` を構築。
+
+    24h キャッシュ（``data/cache/EODHD/eod_*.parquet``）を共有するので
+    同セッションで複数回呼んでも API 消費は 1 銘柄 1 回。
+
+    取得失敗・履歴 0 件などは ``None`` を返し、Composite 集約器側で
+    Momentum 軸を 0 点にフォールバックする。Streamlit ページで例外を
+    上げない（ループ全体を停止させないための境界処理）。
+    """
+    try:
+        returns = client.get_returns(ticker, exchange=exchange)
+    except (httpx.HTTPError, EODHDAPIError, ValueError, KeyError):
+        return None
+    if returns["return_12m"] is None and returns["return_1m"] is None:
+        return None
+    return MomentumSubScoreInputs(
+        return_12m=returns["return_12m"],
+        return_1m=returns["return_1m"],
+    )
 
 
 def _build_growth_inputs(
@@ -533,6 +585,7 @@ def render_recommendation_card(
 
 
 eodhd_client = get_eodhd_client()
+yfinance_client = get_yfinance_client()
 api_available = eodhd_client is not None
 news_client = get_news_client()
 anthropic_client = get_anthropic_client()
@@ -588,14 +641,22 @@ with st.sidebar:
         step=10_000_000,
         disabled=not real_mode,
     )
+    _SECTOR_LABEL_JP: dict[str, str] = {
+        "Financials": "金融（Financials）",
+        "Utilities": "公益事業（Utilities）",
+        "Energy": "エネルギー（Energy）",
+        "Real Estate": "不動産（Real Estate）",
+    }
     excluded = st.multiselect(
         "除外セクター",
-        ["Financials", "Utilities", "Energy", "Real Estate"],
+        list(_SECTOR_LABEL_JP.keys()),
         default=settings.excluded_sectors_list,
+        format_func=lambda s: _SECTOR_LABEL_JP.get(s, s),
         disabled=not real_mode,
+        help="Magic Formula は資本回転率の異なる金融・公益・エネルギーを除外するのが定石。",
     )
 
-    top_n = st.slider("上位 N 銘柄", 1, 30, min(settings.mf_top_n, 30))
+    top_n = st.slider("表示件数（上位）", 1, 30, min(settings.mf_top_n, 30))
 
     st.subheader("📰 推奨根拠カード")
     if news_features_available:
@@ -623,12 +684,12 @@ with st.sidebar:
 
     st.subheader("📋 Composite Score")
     enable_composite = st.checkbox(
-        "上位銘柄に世界一投資家網羅スコアを併記",
+        "上位銘柄に総合スコア（7 軸）を併記する",
         value=True,
         help=(
-            "Phase 3.1a 8 サブスコア（Q/I/R/S）を投資スタイル別プリセットで"
-            "重み付け合算。配当・優待・破綻リスク・センチメントを束ね、"
-            "「素人考えで見落としがち」な軸を網羅する。"
+            "Quality / Value / Income / Growth / Risk / Momentum / Sentiment の"
+            "7 軸を、投資スタイル別プリセットで重み付け合算した総合スコア。"
+            "配当・破綻リスク・センチメントなど、見落としがちな観点を一画面で確認できる。"
         ),
         disabled=not real_mode,
     )
@@ -660,10 +721,12 @@ with st.sidebar:
 
 if run_button:
     if real_mode and eodhd_client is not None:
-        with st.spinner(f"EODHD から {len(tickers)} 銘柄のファンダ取得中..."):
+        with st.spinner(
+            f"yfinance から {len(tickers)} 銘柄のファンダ取得中..."
+        ):
             try:
                 df = fetch_real_universe(
-                    eodhd_client,
+                    yfinance_client,
                     tickers,
                     exchange=exchange,
                     excluded_sectors=tuple(excluded),
@@ -678,7 +741,7 @@ if run_button:
                 "セクター除外・最低時価総額・ティッカー指定を見直してください。"
             )
             st.stop()
-        data_source = f"EODHD live ({exchange})"
+        data_source = f"yfinance fundamentals + EODHD prices ({exchange})"
         data_period = pd.Timestamp.now(tz="UTC").strftime(
             "fundamentals_as_of_%Y-%m-%d"
         )
@@ -749,11 +812,11 @@ if run_button:
 
     rename_map = {
         "ticker": "ティッカー",
-        "magic_formula_score": "合算スコア（小↓良）",
-        "roc": "ROC",
-        "earnings_yield": "EY",
-        "roc_rank": "ROC ランク",
-        "ey_rank": "EY ランク",
+        "magic_formula_score": "合算スコア（小さいほど良い）",
+        "roc": "資本利益率(ROC)",
+        "earnings_yield": "益利回り(EY)",
+        "roc_rank": "ROC 順位",
+        "ey_rank": "EY 順位",
         "sector": "セクター",
         "market_cap": "時価総額",
     }
@@ -833,7 +896,7 @@ if run_button:
     # 📋 Composite Score 詳細（Phase 3.1a — 世界一投資家網羅）
     # ───────────────────────────────────────────────
     if enable_composite and real_mode and eodhd_client is not None:
-        st.subheader("📋 Composite Score 詳細（世界一投資家網羅）")
+        st.subheader("📋 Composite Score 詳細（投資家視点の総合スコア）")
         st.caption(
             f"投資スタイル: **{PRESET_DISPLAY_LABELS[composite_preset]}** — "
             f"{PRESET_RATIONALE[composite_preset]}"
@@ -852,7 +915,7 @@ if run_button:
                 text=f"Composite 計算中: {ticker_name} ({idx + 1}/{len(result.result)})",
             )
             try:
-                fundamentals = eodhd_client.get_fundamentals(
+                fundamentals = yfinance_client.get_fundamentals(
                     ticker_name, exchange=ticker_exchange
                 )
             except Exception:  # noqa: BLE001
@@ -872,8 +935,18 @@ if run_button:
                 Decimal("1"),
             )
 
+            momentum_inputs = _fetch_momentum_inputs(
+                eodhd_client, ticker_name, exchange=ticker_exchange
+            )
             inputs = build_composite_inputs_from_fundamentals(
-                fundamentals, current_price_jpy=current_price
+                fundamentals,
+                current_price_jpy=current_price,
+                momentum_inputs=momentum_inputs,
+                momentum_12m=(
+                    momentum_inputs.return_12m
+                    if momentum_inputs is not None
+                    else None
+                ),
             )
             if inputs is None:
                 continue
@@ -972,8 +1045,8 @@ if run_button:
         )
     if enable_composite and real_mode:
         risk_messages.append(
-            "**Composite Score は Phase 3.1a 暫定**: ROIC/WACC・連続増配年数・"
-            "13F 機関投資家保有・優待は Phase 3.1b/3.2 で精緻化予定"
+            "**総合スコアは Phase 3.1b 時点の暫定値**: ROIC/WACC・連続増配年数・"
+            "13F 機関投資家保有・株主優待は Phase 3.2 以降で精緻化予定"
         )
     st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
 

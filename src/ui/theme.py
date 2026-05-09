@@ -197,11 +197,34 @@ hr {
 """
 
 
+# ブラウザの自動翻訳（Chrome 翻訳が「Magic Formula → 魔法の計算式」「US → 私たち」「Home → 家」
+# 等と勝手に翻訳して UI を破壊する問題）を抑止する。
+# - meta name="google" content="notranslate": Google 翻訳に翻訳禁止を伝える
+# - html.translate=false / lang="ja": HTML 標準の translate 属性
+# Streamlit は <script> タグを body に置いてもサニタイズせず DOM に挿入するので、
+# JS で root <html> 要素に直接 lang/translate を設定する。
+_DISABLE_BROWSER_TRANSLATION: str = """
+<meta name="google" content="notranslate">
+<meta name="google-translate-customization" content="notranslate">
+<script>
+(function() {
+    try {
+        document.documentElement.lang = 'ja';
+        document.documentElement.translate = false;
+        document.documentElement.setAttribute('translate', 'no');
+        document.documentElement.classList.add('notranslate');
+    } catch (e) {}
+})();
+</script>
+"""
+
+
 def apply_theme() -> None:
-    """ページ冒頭で呼び出してカスタム CSS を injection。
+    """ページ冒頭で呼び出してカスタム CSS と翻訳抑止を injection。
 
     ``st.set_page_config`` の直後に呼ぶこと。
     """
+    st.markdown(_DISABLE_BROWSER_TRANSLATION, unsafe_allow_html=True)
     st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
 
 
