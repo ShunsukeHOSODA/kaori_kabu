@@ -26,9 +26,14 @@ import pandas as pd
 import streamlit as st
 
 from src.analysis.regime import RegimeResult, detect_regime_with_provenance
+from src.analysis.risk_metrics import (
+    compute_portfolio_returns,
+    compute_risk_metrics,
+)
 from src.config.settings import settings
 from src.dashboard.widgets.atr_alert import evaluate_alert, render_alert_row
 from src.dashboard.widgets.regime_signal import render_regime_signal
+from src.dashboard.widgets.risk_metrics_panel import render_risk_metrics_panel
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDAPIError, EODHDClient
 from src.portfolio.holdings import Portfolio
@@ -252,6 +257,73 @@ if evaluate_button:
                 ]
             )
             st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+            # ───────────────────────────────────────────────
+            # 📊 リスク指標（Phase 3.2 / CLAUDE.md §9.8 Provenance）
+            # 評価できた銘柄全体のポートフォリオレベルでの過去 1 年指標。
+            # 失敗（404 / データ不足 / 計算不能）はすべて UI に明示する。
+            # ───────────────────────────────────────────────
+            st.divider()
+            st.subheader("📊 リスク指標")
+            st.caption(
+                "保有ポートフォリオの**過去 1 年**の指標。"
+                "**1 銘柄ごと**ではなく**保有比率で混ぜたポートフォリオ全体**の数字"
+            )
+
+            one_year_ago = today - timedelta(days=370)
+            prices_by_ticker: dict[str, pd.Series] = {}
+            for v in valuations:
+                _h = portfolio.by_ticker(v.ticker)
+                if _h is None:
+                    continue
+                try:
+                    df_year = client.get_eod(
+                        v.ticker,
+                        from_date=one_year_ago,
+                        to_date=today,
+                        exchange=_h.exchange,
+                    )
+                except (EODHDAPIError, httpx.HTTPError):
+                    continue
+                if (
+                    "date" not in df_year.columns
+                    or "close" not in df_year.columns
+                    or len(df_year) < 30
+                ):
+                    continue
+                prices_by_ticker[v.ticker] = pd.Series(
+                    df_year["close"].astype(float).values,
+                    index=pd.to_datetime(df_year["date"]),
+                    name=v.ticker,
+                )
+
+            if not prices_by_ticker:
+                st.info(
+                    "リスク指標計算に必要な過去 1 年データを取得できませんでした"
+                    "（最低 30 営業日必要）"
+                )
+            else:
+                _valid_v = [v for v in valuations if v.ticker in prices_by_ticker]
+                _total_mv = sum(
+                    (v.market_value_jpy for v in _valid_v), Decimal("0")
+                )
+                if _total_mv == Decimal("0"):
+                    st.info("評価額が 0 のためリスク指標を計算できません。")
+                else:
+                    weights = {
+                        v.ticker: v.market_value_jpy / _total_mv
+                        for v in _valid_v
+                    }
+                    try:
+                        portfolio_returns = compute_portfolio_returns(
+                            prices_by_ticker, weights
+                        )
+                        metrics = compute_risk_metrics(
+                            portfolio_returns, input_data_source="EODHD"
+                        )
+                        render_risk_metrics_panel(metrics)
+                    except (ValueError, ZeroDivisionError) as exc:
+                        st.warning(f"リスク指標計算エラー: {exc}")
 
             # ───────────────────────────────────────────────
             # ATR トレーリングストップアラート（CLAUDE.md §9.5 / §9.7）
