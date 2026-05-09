@@ -175,7 +175,7 @@ class TestPresetWeights:
 
         assert INVESTOR_PRESETS_PHASE_3_1A is INVESTOR_PRESETS_PHASE_3_1B
 
-    def test_4プリセット存在(self) -> None:
+    def test_5プリセット存在(self) -> None:
         from analysis.composite.presets import INVESTOR_PRESETS_PHASE_3_1B
 
         assert set(INVESTOR_PRESETS_PHASE_3_1B.keys()) == {
@@ -183,6 +183,7 @@ class TestPresetWeights:
             "配当再投資型",
             "Lynch_型",
             "逆張り型",
+            "モメンタム型",
         }
 
     def test_全プリセット_7軸定義済み(self) -> None:

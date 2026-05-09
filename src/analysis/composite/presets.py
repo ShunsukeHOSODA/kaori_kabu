@@ -56,6 +56,15 @@ INVESTOR_PRESETS_PHASE_3_1B: Final[dict[str, dict[str, float]]] = {
         "M": 5.0,
         "S": 5.0,
     },
+    "モメンタム型": {
+        "Q": 10.0,
+        "V": 15.0,
+        "I": 5.0,
+        "G": 10.0,
+        "R": 15.0,
+        "M": 40.0,
+        "S": 5.0,
+    },
 }
 
 INVESTOR_PRESETS_PHASE_3_1A: Final[dict[str, dict[str, float]]] = (
@@ -68,6 +77,7 @@ PRESET_DISPLAY_LABELS: Final[dict[str, str]] = {
     "配当再投資型": "配当再投資型（Coca-Cola Buffett モデル）",
     "Lynch_型": "Lynch 型（PEG ≦ 1.0 のテンバガー候補）",
     "逆張り型": "逆張り型（Burry / Pabrai 流の深割安）",
+    "モメンタム型": "モメンタム型（12m + 1m 加速＋ Risk 回避）",
 }
 
 PRESET_RATIONALE: Final[dict[str, str]] = {
@@ -75,6 +85,7 @@ PRESET_RATIONALE: Final[dict[str, str]] = {
     "配当再投資型": "Income 50 重視、配当再投資の複利効果狙い",
     "Lynch_型": "Growth 35 + PEG ≦1 の割安成長株、テンバガー候補",
     "逆張り型": "Value 35 + Risk 回避 25、深割安+倒産リスク排除",
+    "モメンタム型": "Momentum 40 + Risk 15、加速トレンド + 倒産リスク排除",
 }
 
 

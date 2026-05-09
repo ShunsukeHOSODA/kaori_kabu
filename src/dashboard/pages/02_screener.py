@@ -50,6 +50,7 @@ from src.analysis.sentiment import (
 from src.config.settings import settings
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDAPIError, EODHDClient
+from src.data.famous_holdings import get_famous_owners, render_owner_badges
 from src.data.news import MarketContext, NewsClient
 from src.data.yfinance import YFinanceClient, make_default_yfinance_client
 from src.ui.components import (
@@ -61,12 +62,15 @@ from src.ui.components import (
 from src.ui.theme import apply_theme
 
 st.set_page_config(
-    page_title="Magic Formula — kaori_kabu", page_icon="📊", layout="wide"
+    page_title="おすすめ銘柄 — kaori_kabu", page_icon="🔍", layout="wide"
 )
 apply_theme()
 
-st.title("📊 Magic Formula スクリーナー")
-st.caption("Joel Greenblatt の ROC + Earnings Yield で割安銘柄を抽出")
+st.title("🔍 おすすめ銘柄")
+st.caption(
+    "Magic Formula + 7 軸 Composite Score + 達人保有（13F）+ モメンタム を統合し、"
+    "**長期 / 中期 / 短期 / 急騰候補** の 4 カテゴリで推薦"
+)
 
 st.markdown(
     """
@@ -74,6 +78,7 @@ st.markdown(
 
     良い会社（ROC 高）を安く買う（EY 高）— Buffett 哲学を数式に落としたもの。
     Greenblatt 2010 のバックテストで年率 17% を実証。
+    上位銘柄は Composite Score（7 軸）と達人保有バッジ 🐋 で更に絞り込む。
     """
 )
 
@@ -694,16 +699,28 @@ with st.sidebar:
         disabled=not real_mode,
     )
     if enable_composite and real_mode:
-        composite_preset = st.selectbox(
-            "投資スタイル",
-            options=list(PRESET_DISPLAY_LABELS.keys()),
-            format_func=lambda k: PRESET_DISPLAY_LABELS[k],
+        # 要件 .steering/20260509-ui-5tab-redesign/ §4: 4 カテゴリ表示
+        # （長期 / 中期 / 短期 / 急騰候補）。配当再投資型は Composite ロジック
+        # としては有効だが、おすすめ UI では 4 カテゴリに絞る。
+        _CATEGORY_TO_PRESET: dict[str, str] = {
+            "🐋 長期保有 (バフェット型)": "Buffett_型_暫定",
+            "📊 中期 (リンチ型)": "Lynch_型",
+            "🚀 短期 (モメンタム)": "モメンタム型",
+            "💎 急騰候補 (逆張り)": "逆張り型",
+        }
+        _selected_category = st.radio(
+            "おすすめカテゴリ",
+            options=list(_CATEGORY_TO_PRESET.keys()),
             index=0,
-            help="\n".join(
-                f"- **{PRESET_DISPLAY_LABELS[k]}**: {PRESET_RATIONALE[k]}"
-                for k in PRESET_DISPLAY_LABELS
+            help=(
+                "**4 カテゴリの違い**\n"
+                "- 🐋 **長期**: 質×価値、Berkshire 流の長期ホールド型\n"
+                "- 📊 **中期**: 成長株 + PEG ≦ 1、テンバガー候補（3-5 年）\n"
+                "- 🚀 **短期**: 12m + 1m モメンタム加速、数ヶ月スパン\n"
+                "- 💎 **急騰候補**: 深割安 + リスク回避、暴落からの反発狙い"
             ),
         )
+        composite_preset = _CATEGORY_TO_PRESET[_selected_category]
     else:
         composite_preset = "Buffett_型_暫定"
 
@@ -956,9 +973,14 @@ if run_button:
                 "🚨" if any(w.severity == "RED" for w in composite.warnings)
                 else ("⚠️" if composite.warnings else "✅")
             )
+            # 達人保有バッジ（要件 §3 反対意見 2: 13F 完全裏化を避け心理的安心材料として併記）
+            _owners = get_famous_owners(ticker_name, ticker_exchange)
+            _ticker_with_badge = (
+                f"{ticker_name} {render_owner_badges(_owners)}" if _owners else ticker_name
+            )
             composite_rows.append(
                 {
-                    "ティッカー": ticker_name,
+                    "ティッカー": _ticker_with_badge,
                     "Composite": f"{composite.composite_score:.1f}",
                     "Q": f"{composite.sub_scores['Q']:.0f}",
                     "V": f"{composite.sub_scores['V']:.0f}",
