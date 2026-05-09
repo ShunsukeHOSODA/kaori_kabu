@@ -21,8 +21,11 @@ import streamlit as st
 from src.config.settings import settings
 from src.ui.theme import apply_theme
 
-# ページファイルへのパス（pages/ ディレクトリ配下を絶対パス指定）
-_PAGES_DIR: Path = Path(__file__).parent / "pages"
+# ビューファイルへのパス（views/ 配下を絶対パス指定）。
+# `pages/` という名前にすると Streamlit の自動探索が st.navigation を上書きして
+# 8 ページすべてサイドバーに出てしまうため、`views/` にリネームして抑止する
+# （要件 .steering/20260509-ui-5tab-redesign/）。
+_PAGES_DIR: Path = Path(__file__).parent / "views"
 
 
 def _welcome_page() -> None:
