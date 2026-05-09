@@ -133,7 +133,7 @@ tests/
 |---|---|
 | 戦略実装 | `src/analysis/`（ロジック） + `src/strategies/`（バックテスト連携） |
 | 外部 API | `src/data/{provider}.py` |
-| ダッシュボードページ | `src/dashboard/pages/{nn}_{name}.py`（番号で順序固定） |
+| ダッシュボードビュー | `src/dashboard/views/{nn}_{name}.py`（番号で順序固定）。**`pages/` という名前は Streamlit の自動探索 magic name と衝突するため `views/` を採用**（要件 .steering/20260509-ui-5tab-redesign/ 参照） |
 | 共通 UI | `src/ui/` |
 | 設定 | `src/config/settings.py` 一箇所に集約 |
 | テストフィクスチャ | `tests/fixtures/`（parquet 推奨） |

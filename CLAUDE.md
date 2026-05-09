@@ -59,7 +59,8 @@ docs/  ← 永続的（北極星）
 
 | ソース | 月額 | 用途 |
 |---|---|---|
-| **EODHD All World** | $19.99 | 米国 + 60+ 取引所 + 日本株 EOD（30+年） |
+| **EODHD EOD+Intraday Extended** | $29.99 (≈4,500 円) | 米国 + 60+ 取引所 + 日本株 EOD（30+ 年）+ 米国 Intraday from 2004。**Fundamentals 不可** |
+| **yfinance（ファンダ補完）** | 無料 | Yahoo Finance 非公式 API。米国大型株 ◎、小型・日本株 △、規約グレー、個人利用限定 |
 | **J-Quants Light** | 1,650 円 | 日本株の正本（JPX 公式、当日データ）|
 | SEC EDGAR | 無料 | 米国 13F、ファンダメンタル原本、Form 4 |
 | FRED | 無料 | 米マクロ |
@@ -67,7 +68,9 @@ docs/  ← 永続的（北極星）
 | Polymarket / Kalshi | 無料 | 予測市場（Fed 利上げ、選挙等） |
 | OpenInsider / WhaleWisdom 無料枠 | 無料 | インサイダー / 13F 補完 |
 
-**月額合計: 約 4,500 円**
+**月額合計: 約 6,150 円**（Phase 3.1b 時点 / 2026-05）
+
+> Phase 3.1b で EODHD は当初想定 All World $19.99 ではなく EOD+Intraday Extended $29.99 を採用。Fundamentals は別契約のため yfinance（無料）で補完する分業構成。深掘り時は EODHD ALL-IN-ONE $99.99（年払 $83.33）へのアップグレードを検討。
 
 ### MVP 7 機能（`docs/product-requirements.md` 参照）
 

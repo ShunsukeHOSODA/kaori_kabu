@@ -131,6 +131,24 @@ htmlcov/
 *~
 .tmp/
 
+# === Playwright MCP デバッグ成果物 ===
+.playwright-mcp/
+
+# === ダッシュボード視覚検証スクリーンショット（一時） ===
+*-after.png
+*-after2.png
+*-result.png
+*-labels.png
+*-with-guide.png
+*-radio.png
+*-final.png
+*-tab.png
+welcome-*.png
+sidebar-*.png
+screener-*.png
+research-*.png
+page-*.png
+
 # === graphify ===
 # graphify-out/ は意図的に commit する場合あり
 

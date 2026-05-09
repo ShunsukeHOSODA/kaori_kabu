@@ -356,7 +356,7 @@ src/analysis/composite/
 ```
 src/data/topic_stocks.py        # Tavily/Exa 呼び出し + パース + 重複排除
 src/analysis/topic_screener.py  # 話題スコア（記事数 / 取り上げメディア層）
-src/dashboard/pages/04_topics.py  # 独立 Streamlit ページ
+src/dashboard/views/04_topics.py  # 独立 Streamlit ビュー（旧 pages/）
 data/cache/topic_stocks/{YYYY-MM-DD}.parquet  # 日次キャッシュ
 ```
 
