@@ -153,3 +153,49 @@ class TestRenderAlertRow:
         assert "安全圏" in msg
         # safe のときは "売却検討" を出さない（Confirmation Bias 抑止）
         assert "売却検討" not in msg
+
+
+@pytest.mark.unit
+class TestRenderAlertRowCurrency:
+    """通貨別の symbol レンダリング検証。
+
+    Streamlit Markdown は ``$...$`` を KaTeX inline math と解釈するため、
+    USD は ``\\$`` にエスケープしないと「基準 $277、現在 $293」が
+    「基準 ``277、現在`` 293」と崩れて描画される（2026-05-09 実機回帰）。
+    """
+
+    def _alert(self, currency: str) -> AtrAlert:
+        return AtrAlert(
+            ticker="AAPL",
+            current_price=Decimal("293"),
+            stop_price=Decimal("277"),
+            status="safe",
+            reason_lines=(),
+            currency=currency,
+        )
+
+    def test_USD_currency_は_dollar_sign_を_backslash_でエスケープする(self) -> None:
+        container = MagicMock()
+        render_alert_row(self._alert("USD"), container=container)
+
+        msg = container.success.call_args[0][0]
+        # ``\$277`` / ``\$293`` の形でリテラル $ にエスケープされていること
+        assert r"\$277" in msg
+        assert r"\$293" in msg
+
+    def test_JPY_currency_は_yen_sign_を出力する(self) -> None:
+        container = MagicMock()
+        render_alert_row(self._alert("JPY"), container=container)
+
+        msg = container.success.call_args[0][0]
+        assert "¥277" in msg
+        assert "¥293" in msg
+
+    def test_未知の通貨_は_currency_code_と空白で表示する(self) -> None:
+        container = MagicMock()
+        render_alert_row(self._alert("CHF"), container=container)
+
+        msg = container.success.call_args[0][0]
+        # 未知通貨は "CHF " prefix にフォールバック
+        assert "CHF 277" in msg
+        assert "CHF 293" in msg

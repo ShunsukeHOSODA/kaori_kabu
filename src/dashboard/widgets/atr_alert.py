@@ -95,9 +95,13 @@ _STATUS_DISPLAY: Final[dict[AlertStatus, tuple[str, str, str]]] = {
     "breach": ("🔴", "を**抵触**", "error"),
 }
 
+# Streamlit の Markdown レンダラは ``$...$`` を KaTeX の inline math として解釈する。
+# USD 表示で ``$`` が連続出現すると 2 個目までが数式 delimiter とマッチし、
+# 「基準 $277、現在 $293」が「基準 ``277、現在`` 293」と崩れて描画される
+# （2026-05-09 実機で確認）。``\$`` でリテラル ``$`` にエスケープする。
 _CURRENCY_SYMBOLS: Final[dict[str, str]] = {
     "JPY": "¥",
-    "USD": "$",
+    "USD": r"\$",
     "EUR": "€",
     "GBP": "£",
 }
