@@ -50,6 +50,45 @@ class RiskMetricsMetadata:
 
 
 @dataclass(frozen=True)
+class BenchmarkMetadata:
+    """ベンチマーク比較の出所情報（CLAUDE.md §9.8.2 必須メタデータ）。"""
+
+    calculation_method: str
+    academic_source: str
+    calculated_at: datetime
+    input_data_period: str
+    input_data_source: str | None
+    code_commit: str | None
+    benchmark_label: str
+
+
+@dataclass(frozen=True)
+class BenchmarkComparison:
+    """ポートフォリオ vs ベンチマークの比較指標（immutable）。
+
+    すべての値は ``daily simple returns`` 入力から派生。年率指標は
+    ``empyrical`` の 252 営業日換算による。
+
+    Attributes:
+        alpha: Jensen's alpha（年率超過リターン、>0 で勝ち）
+        beta: 市場感応度（=1 がベンチ追随、<1 が低ボラ、>1 が高ボラ）
+        information_ratio: (年率超過リターン) / (年率 Tracking Error)
+        tracking_error: 差分リターンの年率標準偏差
+        up_capture: 上昇局面捕捉率（1.0 でベンチ並み、>1.0 で上回り）
+        down_capture: 下落局面捕捉率（1.0 でベンチ並み、<1.0 で耐性あり）
+        metadata: provenance metadata
+    """
+
+    alpha: float
+    beta: float
+    information_ratio: float
+    tracking_error: float
+    up_capture: float
+    down_capture: float
+    metadata: BenchmarkMetadata
+
+
+@dataclass(frozen=True)
 class RiskMetrics:
     """保有ポートフォリオのリスク指標一式（immutable）。
 
@@ -180,6 +219,84 @@ def compute_risk_metrics(
         cvar_95=cvar,
         annualized_return=ann_return,
         annualized_volatility=ann_vol,
+        metadata=metadata,
+    )
+
+
+def compute_benchmark_comparison(
+    returns: pd.Series,
+    benchmark_returns: pd.Series,
+    *,
+    benchmark_label: str,
+    input_data_source: str | None = None,
+) -> BenchmarkComparison:
+    """ポートフォリオ vs ベンチマークの相対指標 + provenance を返す。
+
+    両系列を共通日付で inner join した後、empyrical-reloaded で α/β/IR/TE/
+    Up-Down Capture を計算する。「Sharpe 0.8 は高いの？低いの？」の判断を
+    可能にし、Recency Bias / Confirmation Bias 抑止（CLAUDE.md §9.7）。
+
+    Args:
+        returns: ポートフォリオの daily simple returns
+        benchmark_returns: ベンチマークの daily simple returns（SPY/TOPIX 等）
+        benchmark_label: ベンチマーク表示名（例 ``"S&P500"``、UI 表示用）
+        input_data_source: メタデータのデータ源ラベル（例 ``"EODHD"``）
+
+    Raises:
+        ValueError: 共通日付が無い、または観測数 < 2
+
+    学術根拠:
+        Jensen, M. C. (1968). "The Performance of Mutual Funds."
+            J. of Finance 23(2). — Jensen's alpha
+        Sharpe, W. F. (1992). "Asset Allocation: Management Style and
+            Performance Measurement." J. of Portfolio Management. — IR
+        Goodwin, T. H. (1998). "The Information Ratio."
+            Financial Analysts Journal. — IR 改訂版
+    """
+    common_idx = returns.index.intersection(benchmark_returns.index)
+    if len(common_idx) < 2:
+        raise ValueError(
+            "共通日付が 2 件未満で比較不能 "
+            f"(returns={len(returns)}, benchmark={len(benchmark_returns)}, "
+            f"common={len(common_idx)})"
+        )
+    aligned_port = returns.loc[common_idx]
+    aligned_bench = benchmark_returns.loc[common_idx]
+
+    alpha = float(ep.alpha(aligned_port, aligned_bench))
+    beta = float(ep.beta(aligned_port, aligned_bench))
+    info_ratio = float(ep.excess_sharpe(aligned_port, aligned_bench))
+    # empyrical-reloaded には tracking_error 関数が存在しないため自前計算。
+    # TE = std(R_p - R_b) × √252（daily → 年率）。Goodwin 1998 の標準式。
+    tracking_err = float(
+        (aligned_port - aligned_bench).std(ddof=1) * (252 ** 0.5)
+    )
+    up_cap = float(ep.up_capture(aligned_port, aligned_bench))
+    down_cap = float(ep.down_capture(aligned_port, aligned_bench))
+
+    period_str = _format_period(common_idx.min(), common_idx.max())
+
+    metadata = BenchmarkMetadata(
+        calculation_method="benchmark_comparison_v1",
+        academic_source=(
+            'Jensen 1968 "Performance of Mutual Funds" (alpha); '
+            'Sharpe 1992 "Asset Allocation Style/Performance" (IR); '
+            'Goodwin 1998 "The Information Ratio"'
+        ),
+        calculated_at=datetime.now(timezone.utc),
+        input_data_period=period_str,
+        input_data_source=input_data_source,
+        code_commit=_get_current_git_commit(),
+        benchmark_label=benchmark_label,
+    )
+
+    return BenchmarkComparison(
+        alpha=alpha,
+        beta=beta,
+        information_ratio=info_ratio,
+        tracking_error=tracking_err,
+        up_capture=up_cap,
+        down_capture=down_cap,
         metadata=metadata,
     )
 

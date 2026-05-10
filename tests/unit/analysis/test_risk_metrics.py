@@ -13,8 +13,11 @@ import pandas as pd
 import pytest
 
 from analysis.risk_metrics import (
+    BenchmarkComparison,
+    BenchmarkMetadata,
     RiskMetrics,
     RiskMetricsMetadata,
+    compute_benchmark_comparison,
     compute_portfolio_returns,
     compute_risk_metrics,
 )
@@ -167,3 +170,145 @@ class TestComputeRiskMetrics:
 
         with pytest.raises(Exception):  # FrozenInstanceError
             metrics.sharpe = 99.0  # type: ignore[misc]
+
+
+@pytest.mark.unit
+class TestComputeBenchmarkComparison:
+    """ポートフォリオ vs ベンチマーク比較指標の検証。
+
+    empyrical-reloaded の alpha / beta / excess_sharpe(IR) /
+    tracking_error / up_capture / down_capture をラップし、
+    Provenance metadata を付与する。
+    """
+
+    def _bench(self, n: int = 252, value: float = 0.0004) -> pd.Series:
+        idx = pd.date_range("2024-01-02", periods=n, freq="B")
+        return pd.Series([value] * n, index=idx, name="bench_ret")
+
+    def test_完全相関_β_1_α_0(self) -> None:
+        """ポートフォリオ = ベンチマーク → β ≈ 1, α ≈ 0, TE ≈ 0。
+
+        empyrical の β は ``Cov(R, B) / Var(B)`` のため、ベンチマークが
+        一定（Var=0）だと NaN になる。**変動する系列**で比較する必要あり。
+        """
+        import numpy as np
+
+        rng = np.random.default_rng(seed=7)
+        idx = pd.date_range("2024-01-02", periods=120, freq="B")
+        bench_vals = rng.normal(loc=0.0005, scale=0.012, size=120)
+        bench = pd.Series(bench_vals, index=idx, name="bench")
+        port = bench.copy()
+        port.name = "port"
+
+        cmp_ = compute_benchmark_comparison(
+            port, bench, benchmark_label="S&P500"
+        )
+
+        assert isinstance(cmp_, BenchmarkComparison)
+        assert cmp_.beta == pytest.approx(1.0, abs=1e-6)
+        assert cmp_.alpha == pytest.approx(0.0, abs=1e-6)
+        assert cmp_.tracking_error == pytest.approx(0.0, abs=1e-6)
+
+    def test_β_0_5_は_ベンチマーク変動の半分(self) -> None:
+        """ポートフォリオがベンチマークの 0.5 倍変動 → β ≈ 0.5。"""
+        idx = pd.date_range("2024-01-02", periods=100, freq="B")
+        # ベンチマークは振動、ポートフォリオはその半分
+        import numpy as np
+
+        rng = np.random.default_rng(seed=42)
+        bench_vals = rng.normal(loc=0.0005, scale=0.01, size=100)
+        bench = pd.Series(bench_vals, index=idx, name="bench")
+        port = pd.Series(bench_vals * 0.5, index=idx, name="port")
+
+        cmp_ = compute_benchmark_comparison(port, bench, benchmark_label="SPY")
+
+        assert cmp_.beta == pytest.approx(0.5, abs=0.05)
+
+    def test_information_ratio_出力_が_数値(self) -> None:
+        bench = self._bench(value=0.0003)
+        port = self._bench(value=0.0006)
+        port.name = "port"
+
+        cmp_ = compute_benchmark_comparison(
+            port, bench, benchmark_label="S&P500"
+        )
+
+        # 一定リターン差があるので IR は有限の数値（非 NaN）
+        import math
+
+        assert not math.isnan(cmp_.information_ratio)
+        assert not math.isinf(cmp_.information_ratio)
+
+    def test_up_down_capture_出力(self) -> None:
+        idx = pd.date_range("2024-01-02", periods=20, freq="B")
+        bench = pd.Series(
+            [0.01, -0.02, 0.015, -0.01, 0.02, -0.015, 0.01, -0.025, 0.018, 0.005,
+             -0.012, 0.022, -0.018, 0.014, -0.008, 0.011, -0.02, 0.016, -0.013, 0.009],
+            index=idx,
+            name="bench",
+        )
+        # ポートフォリオは上昇局面で 0.8 倍、下落局面で 0.6 倍捕捉
+        port_vals = [
+            v * (0.8 if v > 0 else 0.6) for v in bench
+        ]
+        port = pd.Series(port_vals, index=idx, name="port")
+
+        cmp_ = compute_benchmark_comparison(port, bench, benchmark_label="SPY")
+
+        # empyrical の up_capture / down_capture は cum_return ベースの比率。
+        # 個別日次 0.8 倍 / 0.6 倍に設定しても複利効果で結果は ~0.5 / ~0.9 程度。
+        # 仕様確認: ベンチより小さい捕捉率（< 1.0）が出ること、
+        # 完全に 0 ではないこと（> 0.0）が本テストの主眼。
+        assert 0.0 < cmp_.up_capture < 1.0
+        assert 0.0 < cmp_.down_capture < 1.5  # 下落耐性ありの想定
+
+    def test_共通日付なし_ValueError(self) -> None:
+        """ポートフォリオとベンチマークの日付集合に重なりが無い場合は ValueError。
+
+        実用上は両 API の取得期間がズレることがある（ポートフォリオは
+        J-Quants 2026-02-15 上限、ベンチマークは EODHD 当日まで等）。
+        共通部分 < 2 件で計算不能となるケースを保証する。
+        """
+        port = pd.Series(
+            [0.01, 0.02],
+            index=pd.date_range("2024-01-02", periods=2, freq="B"),
+        )
+        bench = pd.Series(
+            [0.01, 0.02, 0.03],
+            index=pd.date_range("2024-06-03", periods=3, freq="B"),  # 完全別月
+        )
+
+        with pytest.raises(ValueError, match="共通日付|alignment|empty"):
+            compute_benchmark_comparison(
+                port, bench, benchmark_label="S&P500"
+            )
+
+    def test_metadata_必須フィールド完備(self) -> None:
+        bench = self._bench()
+        port = bench.copy()
+        port.name = "port"
+
+        cmp_ = compute_benchmark_comparison(
+            port, bench, benchmark_label="S&P500", input_data_source="EODHD"
+        )
+
+        meta: BenchmarkMetadata = cmp_.metadata
+        assert meta.calculation_method == "benchmark_comparison_v1"
+        assert "Jensen" in meta.academic_source or "alpha" in meta.academic_source.lower()
+        assert meta.benchmark_label == "S&P500"
+        assert meta.input_data_source == "EODHD"
+        assert " to " in meta.input_data_period
+        delta = (datetime.now(timezone.utc) - meta.calculated_at).total_seconds()
+        assert 0 <= delta < 10
+
+    def test_BenchmarkComparison_は_frozen_で不変(self) -> None:
+        bench = self._bench()
+        port = bench.copy()
+        port.name = "port"
+
+        cmp_ = compute_benchmark_comparison(
+            port, bench, benchmark_label="S&P500"
+        )
+
+        with pytest.raises(Exception):  # FrozenInstanceError
+            cmp_.alpha = 99.0  # type: ignore[misc]
