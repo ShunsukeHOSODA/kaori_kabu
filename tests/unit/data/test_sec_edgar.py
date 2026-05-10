@@ -548,3 +548,331 @@ class TestFindInfoTableFilename:
         assert (
             SECEdgarClient._find_infotable_filename({"directory": {}}) is None
         )
+
+
+# ============================================================
+# get_13f_history: 過去 N 四半期の 13F-HR を新しい順で返す
+# ============================================================
+
+
+def _build_berkshire_history_routes() -> dict[str, MagicMock]:
+    """get_13f_history テスト用: 全 5 件の 13F-HR が同じ infotable XML を返す。
+
+    fixture submissions には 5 件の 13F-HR (acc 099 / 9999 / 8888 / 7777 / 5555)
+    が含まれる。各 accession の index.json + InfoTable XML を同一の fixture で
+    返すことで、orchestration（順序 / カウント / Provenance）に集中したテスト
+    が書ける。
+    """
+    accessions_clean = [
+        "000095012326000099",  # 2025-12-31 (latest)
+        "000095012325009999",  # 2025-09-30
+        "000095012325008888",  # 2025-06-30
+        "000095012325007777",  # 2025-03-31
+        "000095012325005555",  # 2024-12-31
+    ]
+    routes: dict[str, MagicMock] = {
+        "data.sec.gov/submissions/CIK0001067983.json": _make_response(
+            200, _load_bytes("berkshire_submissions.json")
+        ),
+    }
+    for acc_clean in accessions_clean:
+        routes[
+            f"/Archives/edgar/data/1067983/{acc_clean}/index.json"
+        ] = _make_response(200, _load_bytes("berkshire_index.json"))
+        routes[
+            f"/Archives/edgar/data/1067983/{acc_clean}/form13fInfoTable.xml"
+        ] = _make_response(
+            200,
+            _load_bytes("berkshire_2025q4_infotable.xml"),
+            content_type="application/xml",
+        )
+    return routes
+
+
+@pytest.mark.unit
+class TestGet13FHistory:
+    """過去 N 四半期の 13F-HR を新しい順で返す（design.md §10.3 前提）。"""
+
+    def test_デフォルト_limit_4_新しい順(self, tmp_path: Path) -> None:
+        from data.cache import ParquetCache
+        from data.sec_edgar import SECEdgarClient
+
+        cache = ParquetCache(base_dir=tmp_path)
+        http_client = _routing_http_client(_build_berkshire_history_routes())
+        client = SECEdgarClient(
+            user_agent="kaori_kabu test test@example.com",
+            cache=cache,
+            http_client=http_client,
+        )
+        history = client.get_13f_history("0001067983")
+
+        assert len(history) == 4
+        # 報告期降順（新しい順）
+        report_dates = [df["report_date"].iloc[0] for df in history]
+        assert report_dates == [
+            pd.Timestamp("2025-12-31"),
+            pd.Timestamp("2025-09-30"),
+            pd.Timestamp("2025-06-30"),
+            pd.Timestamp("2025-03-31"),
+        ]
+
+    def test_limit_2_先頭2件のみ返却(self, tmp_path: Path) -> None:
+        from data.cache import ParquetCache
+        from data.sec_edgar import SECEdgarClient
+
+        cache = ParquetCache(base_dir=tmp_path)
+        http_client = _routing_http_client(_build_berkshire_history_routes())
+        client = SECEdgarClient(
+            user_agent="kaori_kabu test test@example.com",
+            cache=cache,
+            http_client=http_client,
+        )
+        history = client.get_13f_history("0001067983", limit=2)
+        assert len(history) == 2
+
+    def test_13F_HR未提出は_EDGARNotFoundError(
+        self, tmp_path: Path
+    ) -> None:
+        from data.cache import ParquetCache
+        from data.sec_edgar import EDGARNotFoundError, SECEdgarClient
+
+        ten_k_only = json.dumps(
+            {
+                "filings": {
+                    "recent": {
+                        "form": ["10-K"],
+                        "accessionNumber": ["0000950123-25-006666"],
+                        "filingDate": ["2025-04-30"],
+                        "reportDate": ["2024-12-31"],
+                        "primaryDocument": ["brka-20241231.htm"],
+                    }
+                }
+            }
+        ).encode("utf-8")
+        cache = ParquetCache(base_dir=tmp_path)
+        http_client = _routing_http_client(
+            {
+                "data.sec.gov/submissions/CIK0001067983.json": _make_response(
+                    200, ten_k_only
+                ),
+            }
+        )
+        client = SECEdgarClient(
+            user_agent="kaori_kabu test test@example.com",
+            cache=cache,
+            http_client=http_client,
+        )
+        with pytest.raises(EDGARNotFoundError):
+            client.get_13f_history("0001067983")
+
+    def test_キャッシュヒット時_2回目はsubmissionsのみ(
+        self, tmp_path: Path
+    ) -> None:
+        """各 filing は accession 単位でキャッシュ、submissions は毎回 fetch。"""
+        from data.cache import ParquetCache
+        from data.sec_edgar import SECEdgarClient
+
+        cache = ParquetCache(base_dir=tmp_path)
+        http_client = _routing_http_client(_build_berkshire_history_routes())
+        client = SECEdgarClient(
+            user_agent="kaori_kabu test test@example.com",
+            cache=cache,
+            http_client=http_client,
+        )
+        client.get_13f_history("0001067983", limit=2)
+        first = http_client.get.call_count
+
+        client.get_13f_history("0001067983", limit=2)
+        second = http_client.get.call_count
+
+        # 2 回目は submissions の 1 回のみ追加（InfoTable 2 件は cache hit）
+        assert second - first == 1
+
+    def test_各DataFrameにProvenance付与(self, tmp_path: Path) -> None:
+        from data.cache import ParquetCache
+        from data.sec_edgar import SECEdgarClient
+
+        cache = ParquetCache(base_dir=tmp_path)
+        http_client = _routing_http_client(_build_berkshire_history_routes())
+        client = SECEdgarClient(
+            user_agent="kaori_kabu test test@example.com",
+            cache=cache,
+            http_client=http_client,
+        )
+        history = client.get_13f_history("0001067983", limit=2)
+
+        for df in history:
+            assert df.attrs.get("source") == "SEC EDGAR"
+            assert df.attrs.get("fetched_at") is not None
+            assert "params_hash" in df.attrs
+            assert df.attrs.get("cache_hit") is False  # 1 回目は miss
+
+
+# ============================================================
+# compute_qoq_diff: Q-over-Q 差分（cusip ベース、4 区分）
+# ============================================================
+
+
+@pytest.mark.unit
+class TestComputeQoQDiff:
+    """前期比 diff: 新規買い / 売却 / 増持 / 減持 / 保持（design.md §10.3）。"""
+
+    def test_新規買い_前期NaN_今期あり(self) -> None:
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA", "BBB"],
+                "name_of_issuer": ["Apple", "Berry"],
+                "value_usd": [100_000, 50_000],
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous)
+        berry = diff[diff["cusip"] == "BBB"].iloc[0]
+        assert berry["action"] == "新規買い"
+        assert pd.isna(berry["value_previous"])
+        assert berry["change_usd"] == 50_000
+
+    def test_売却_前期あり_今期NaN(self) -> None:
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA", "CCC"],
+                "name_of_issuer": ["Apple", "Coke"],
+                "value_usd": [100_000, 70_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous)
+        coke = diff[diff["cusip"] == "CCC"].iloc[0]
+        assert coke["action"] == "売却"
+        assert pd.isna(coke["value_current"])
+        assert coke["change_usd"] == -70_000
+
+    def test_増持_value_diff_5パーセント超過(self) -> None:
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [120_000],
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous)
+        apple = diff[diff["cusip"] == "AAA"].iloc[0]
+        assert apple["action"] == "増持"
+
+    def test_減持_value_diff_マイナス5パーセント超過(self) -> None:
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [80_000],
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous)
+        apple = diff[diff["cusip"] == "AAA"].iloc[0]
+        assert apple["action"] == "減持"
+
+    def test_保持_5パーセント以内(self) -> None:
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [102_000],  # +2%
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous)
+        apple = diff[diff["cusip"] == "AAA"].iloc[0]
+        assert apple["action"] == "保持"
+
+    def test_threshold_カスタム閾値(self) -> None:
+        """threshold=0.10 にすると +5% は「保持」扱いに変わる。"""
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [105_000],  # +5%
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous, threshold=0.10)
+        apple = diff[diff["cusip"] == "AAA"].iloc[0]
+        assert apple["action"] == "保持"
+
+    def test_出力カラム_6種(self) -> None:
+        """戻り値カラム: cusip / name_of_issuer / value_current /
+        value_previous / change_usd / action の 6 種固定。"""
+        from data.sec_edgar import compute_qoq_diff
+
+        current = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        previous = pd.DataFrame(
+            {
+                "cusip": ["AAA"],
+                "name_of_issuer": ["Apple"],
+                "value_usd": [100_000],
+            }
+        )
+        diff = compute_qoq_diff(current, previous)
+        assert set(diff.columns) == {
+            "cusip",
+            "name_of_issuer",
+            "value_current",
+            "value_previous",
+            "change_usd",
+            "action",
+        }

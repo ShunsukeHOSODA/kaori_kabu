@@ -247,6 +247,78 @@ def parse_information_table(
     return pd.DataFrame(rows)
 
 
+def compute_qoq_diff(
+    current: pd.DataFrame,
+    previous: pd.DataFrame,
+    *,
+    threshold: float = 0.05,
+) -> pd.DataFrame:
+    """Q-over-Q 差分を ``cusip`` ベースで 5 区分に分類する純粋関数。
+
+    design.md §10.3 の前期比 diff:
+
+    - **新規買い**: 前期 NaN, 今期あり
+    - **売却**: 前期あり, 今期 NaN
+    - **増持**: 両期あり, 相対差 > +threshold
+    - **減持**: 両期あり, 相対差 < -threshold
+    - **保持**: 両期あり, |相対差| <= threshold
+
+    Args:
+        current: 今期の保有（``cusip`` / ``name_of_issuer`` / ``value_usd`` 必須）
+        previous: 前期の保有（同上）
+        threshold: 増持・減持の相対差閾値（既定 5% = ``0.05``）
+
+    Returns:
+        ``cusip`` / ``name_of_issuer`` / ``value_current`` / ``value_previous``
+        / ``change_usd`` / ``action`` の 6 カラム DataFrame。
+    """
+    cur = current[["cusip", "name_of_issuer", "value_usd"]].rename(
+        columns={"value_usd": "value_current", "name_of_issuer": "name_cur"}
+    )
+    prev = previous[["cusip", "name_of_issuer", "value_usd"]].rename(
+        columns={"value_usd": "value_previous", "name_of_issuer": "name_prev"}
+    )
+    merged = cur.merge(prev, on="cusip", how="outer")
+
+    # name は今期優先で coalesce
+    merged["name_of_issuer"] = merged["name_cur"].fillna(merged["name_prev"])
+
+    # change_usd: NaN を 0 扱いで差額計算
+    merged["change_usd"] = (
+        merged["value_current"].fillna(0) - merged["value_previous"].fillna(0)
+    )
+
+    def _classify(row: pd.Series) -> str:
+        v_cur = row["value_current"]
+        v_prev = row["value_previous"]
+        if pd.isna(v_prev):
+            return "新規買い"
+        if pd.isna(v_cur):
+            return "売却"
+        if v_prev == 0:
+            # 前期 0 → 新規買い扱い（ゼロ除算回避）
+            return "新規買い" if v_cur > 0 else "保持"
+        rel_diff = (v_cur - v_prev) / v_prev
+        if rel_diff > threshold:
+            return "増持"
+        if rel_diff < -threshold:
+            return "減持"
+        return "保持"
+
+    merged["action"] = merged.apply(_classify, axis=1)
+
+    return merged[
+        [
+            "cusip",
+            "name_of_issuer",
+            "value_current",
+            "value_previous",
+            "change_usd",
+            "action",
+        ]
+    ]
+
+
 def _params_hash(params: dict[str, Any]) -> str:
     """リクエストパラメータの SHA256（先頭 16 文字）。再現性確認用。"""
     serialized = json.dumps(params, sort_keys=True, default=str)
@@ -323,31 +395,88 @@ class SECEdgarClient:
         if cached is not None:
             return cached
 
-        latest = self._find_latest_13fhr(self._get_submissions(cik_norm), cik_norm)
-        index_json = self._get_filing_index(cik_norm, latest.accession_no_clean)
+        submissions = self._get_submissions(cik_norm)
+        filing = self._find_13fhr_filings(submissions, cik_norm, limit=1)[0]
+        df = self._fetch_filing_to_df(cik_norm, filing)
+
+        self.cache.set(CACHE_PROVIDER, cache_key, df)
+        return df
+
+    def get_13f_history(
+        self,
+        cik: str,
+        *,
+        limit: int = 4,
+        cache_ttl_sec: int = DEFAULT_CACHE_TTL_SEC,
+    ) -> list[pd.DataFrame]:
+        """直近 ``limit`` 個の 13F-HR を新しい順で返す（キャッシュ経由）。
+
+        各 filing は accession 単位でキャッシュされるため、新四半期分のみが
+        次回以降 HTTP 呼び出しを発生させる（既存四半期は cache hit）。
+        ``submissions`` JSON は最新性チェックのため毎回 fetch。
+
+        Args:
+            cik: 任意表記の CIK
+            limit: 取得する四半期数（既定 4 = 1 年分）
+            cache_ttl_sec: 各 filing のキャッシュ TTL（既定 90 日）
+
+        Returns:
+            報告期降順の DataFrame リスト。各 DataFrame は
+            :data:`HOLDING_COLUMNS` 形式 + Provenance attrs。
+
+        Raises:
+            EDGARNotFoundError: 13F-HR が 1 件も提出されていない場合
+        """
+        cik_norm = normalize_cik(cik)
+        submissions = self._get_submissions(cik_norm)
+        filings = self._find_13fhr_filings(submissions, cik_norm, limit=limit)
+
+        results: list[pd.DataFrame] = []
+        for filing in filings:
+            cache_key = f"13f_{cik_norm}_{filing.accession_no_clean}"
+            cached = self.cache.get(CACHE_PROVIDER, cache_key, cache_ttl_sec)
+            if cached is not None:
+                results.append(cached)
+                continue
+            df = self._fetch_filing_to_df(cik_norm, filing)
+            self.cache.set(CACHE_PROVIDER, cache_key, df)
+            results.append(df)
+        return results
+
+    # ===== 内部メソッド =====
+
+    def _fetch_filing_to_df(
+        self, cik_norm: str, filing: Filing
+    ) -> pd.DataFrame:
+        """1 件の filing を InfoTable XML 取得 → DataFrame 化（Provenance 付与）。
+
+        ``get_latest_13f`` / ``get_13f_history`` の共通ヘルパー。キャッシュ
+        操作は呼び出し側が担当する。
+        """
+        index_json = self._get_filing_index(cik_norm, filing.accession_no_clean)
         infotable_filename = self._find_infotable_filename(index_json)
         if not infotable_filename:
             raise EDGARNotFoundError(
                 f"InfoTable XML not found for {cik_norm}/"
-                f"{latest.accession_no_clean}"
+                f"{filing.accession_no_clean}"
             )
 
         cik_int = str(int(cik_norm))
         endpoint_path = (
             f"/Archives/edgar/data/{cik_int}/"
-            f"{latest.accession_no_clean}/{infotable_filename}"
+            f"{filing.accession_no_clean}/{infotable_filename}"
         )
         response = self._request(
             f"{self.base_archives_url}{endpoint_path}", endpoint=endpoint_path
         )
         df = parse_information_table(
-            response.content, report_date=latest.report_date
+            response.content, report_date=filing.report_date
         )
 
         # メタデータ列を先頭に挿入
         df.insert(0, "cik", cik_norm)
-        df.insert(1, "report_date", pd.Timestamp(latest.report_date))
-        df.insert(2, "accession_no", latest.accession_no)
+        df.insert(1, "report_date", pd.Timestamp(filing.report_date))
+        df.insert(2, "accession_no", filing.accession_no)
         df = df.reindex(columns=list(HOLDING_COLUMNS))
 
         attach_provenance(
@@ -356,15 +485,11 @@ class SECEdgarClient:
             fetched_at=datetime.now(timezone.utc),
             endpoint=endpoint_path,
             params_hash=_params_hash(
-                {"cik": cik_norm, "accession_no": latest.accession_no}
+                {"cik": cik_norm, "accession_no": filing.accession_no}
             ),
             cache_hit=False,
         )
-
-        self.cache.set(CACHE_PROVIDER, cache_key, df)
         return df
-
-    # ===== 内部メソッド =====
 
     def _get_submissions(self, cik_norm: str) -> dict[str, Any]:
         endpoint = f"/submissions/CIK{cik_norm}.json"
@@ -383,10 +508,21 @@ class SECEdgarClient:
         )
         return response.json()
 
-    def _find_latest_13fhr(
-        self, submissions: dict[str, Any], cik_norm: str
-    ) -> Filing:
-        """``filings.recent`` 並列配列から最新 13F-HR を 1 件返す。"""
+    def _find_13fhr_filings(
+        self,
+        submissions: dict[str, Any],
+        cik_norm: str,
+        *,
+        limit: int = 1,
+    ) -> list[Filing]:
+        """``filings.recent`` 並列配列から 13F-HR を新しい順で最大 ``limit`` 件返す。
+
+        SEC submissions JSON は提出順（新しい順）で並んでいるため、線形走査で
+        ``13F-HR`` のみフィルタすれば自然に新しい順になる。
+
+        Raises:
+            EDGARNotFoundError: 13F-HR が 1 件も見つからない場合
+        """
         recent = submissions.get("filings", {}).get("recent", {})
         forms = recent.get("form", [])
         accession_nos = recent.get("accessionNumber", [])
@@ -394,10 +530,13 @@ class SECEdgarClient:
         report_dates = recent.get("reportDate", [])
         primary_docs = recent.get("primaryDocument", [])
 
+        filings: list[Filing] = []
         for i, form in enumerate(forms):
-            if form == "13F-HR":
-                acc_orig, acc_clean = normalize_accession_no(accession_nos[i])
-                return Filing(
+            if form != "13F-HR":
+                continue
+            acc_orig, acc_clean = normalize_accession_no(accession_nos[i])
+            filings.append(
+                Filing(
                     cik=cik_norm,
                     accession_no=acc_orig,
                     accession_no_clean=acc_clean,
@@ -406,9 +545,15 @@ class SECEdgarClient:
                     report_date=date.fromisoformat(report_dates[i]),
                     primary_document=primary_docs[i],
                 )
-        raise EDGARNotFoundError(
-            f"No 13F-HR filings found for CIK {cik_norm}"
-        )
+            )
+            if len(filings) >= limit:
+                break
+
+        if not filings:
+            raise EDGARNotFoundError(
+                f"No 13F-HR filings found for CIK {cik_norm}"
+            )
+        return filings
 
     @staticmethod
     def _find_infotable_filename(index_json: dict[str, Any]) -> str | None:
