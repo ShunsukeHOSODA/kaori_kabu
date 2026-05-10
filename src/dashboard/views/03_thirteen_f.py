@@ -20,6 +20,7 @@ from src.data.sec_edgar import (
     EDGARNotFoundError,
     EDGARParseError,
     SECEdgarClient,
+    compute_qoq_diff,
 )
 
 st.set_page_config(
@@ -67,6 +68,14 @@ FUNDS: Final[dict[str, str]] = {
 # 集中度フィルタ閾値（design.md §10.2）
 SUPER_CONCENTRATED_MAX_HOLDINGS: Final[int] = 5
 
+# 四半期選択ラベル — index 0 が最新、N が N 期前（design.md §10.3 / Phase D）
+QUARTER_LABELS: Final[tuple[str, ...]] = (
+    "最新",
+    "1 期前",
+    "2 期前",
+    "3 期前",
+)
+
 
 @st.cache_resource
 def _get_edgar_client() -> SECEdgarClient | None:
@@ -83,11 +92,14 @@ def _get_edgar_client() -> SECEdgarClient | None:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_holdings(cik: str) -> tuple[pd.DataFrame | None, str]:
-    """13F 保有データ取得。失敗時 (None, status message)。
+def _fetch_holdings_history(
+    cik: str, *, limit: int = 4
+) -> tuple[list[pd.DataFrame] | None, str]:
+    """過去 ``limit`` 四半期分の 13F 保有データを新しい順で取得。
 
-    @st.cache_data で同 CIK 1 時間メモ化（ParquetCache の 90 日 TTL の上に
-    Streamlit セッション内メモリキャッシュを重ねる）。
+    失敗時 ``(None, status message)`` を返す。@st.cache_data で同 (CIK, limit)
+    1 時間メモ化（ParquetCache の 90 日 TTL の上に Streamlit セッション内
+    メモリキャッシュを重ねる）。
     """
     client = _get_edgar_client()
     if client is None:
@@ -96,8 +108,8 @@ def _fetch_holdings(cik: str) -> tuple[pd.DataFrame | None, str]:
             "`SEC_EDGAR_USER_AGENT='YourName your-email@example.com'` を設定してください。"
         )
     try:
-        df = client.get_latest_13f(cik)
-        return df, ""
+        history = client.get_13f_history(cik, limit=limit)
+        return history, ""
     except EDGARNotFoundError:
         return None, (
             "ℹ️ 13F-HR 提出なし。守秘要請（13F-NT）の可能性があります。"
@@ -199,19 +211,125 @@ def _render_provenance(df: pd.DataFrame) -> None:
         st.json(prov, expanded=False)
 
 
+# 前期比 diff 区分のアイコンマッピング（design.md §10.3）
+QOQ_ACTION_ICONS: Final[dict[str, str]] = {
+    "新規買い": "🆕",
+    "増持": "📈",
+    "減持": "📉",
+    "売却": "🔚",
+    "保持": "🟰",
+}
+QOQ_ACTIONS_ORDERED: Final[tuple[str, ...]] = (
+    "新規買い",
+    "増持",
+    "減持",
+    "売却",
+    "保持",
+)
+
+
+def _render_qoq_diff(diff_df: pd.DataFrame, *, key_suffix: str) -> None:
+    """前期比 diff の 4 区分メトリクス + テーブル（design.md §10.3）。
+
+    Args:
+        diff_df: ``compute_qoq_diff`` の出力 DataFrame
+        key_suffix: ``st.multiselect`` の ``key`` を unique にする識別子
+            （5 ファンドタブで同じ widget が繰り返されるため必須）
+    """
+    if diff_df.empty:
+        st.info("前期比較データなし。")
+        return
+
+    # 区分別カウント表示
+    counts = diff_df["action"].value_counts()
+    cols = st.columns(len(QOQ_ACTIONS_ORDERED))
+    for col, action in zip(cols, QOQ_ACTIONS_ORDERED, strict=False):
+        col.metric(
+            f"{QOQ_ACTION_ICONS.get(action, '')} {action}",
+            f"{int(counts.get(action, 0))} 銘柄",
+        )
+
+    st.divider()
+
+    # 区分フィルタ（保持を既定で除外 = 動きのある銘柄に集中）
+    selected_actions = st.multiselect(
+        "表示する区分",
+        list(QOQ_ACTIONS_ORDERED),
+        default=["新規買い", "増持", "減持", "売却"],
+        help="保持（変化なし）を除外したい時はチェックを外す",
+        key=f"qoq_filter_{key_suffix}",
+    )
+
+    if not selected_actions:
+        st.info("表示する区分を選択してください。")
+        return
+
+    filtered = diff_df[diff_df["action"].isin(selected_actions)].copy()
+    if filtered.empty:
+        st.info("選択された区分に該当する銘柄なし。")
+        return
+
+    # 表示用整形（USD → B$/M$ にスケール）
+    filtered["change_$M"] = (filtered["change_usd"] / 1_000_000).round(1)
+    filtered["value_current_$B"] = (
+        filtered["value_current"].fillna(0) / 1_000_000_000
+    ).round(3)
+    filtered["value_previous_$B"] = (
+        filtered["value_previous"].fillna(0) / 1_000_000_000
+    ).round(3)
+
+    # change_usd の絶対値降順でソート（変化の大きい銘柄を上に）
+    filtered = filtered.assign(
+        _abs_change=filtered["change_usd"].abs()
+    ).sort_values("_abs_change", ascending=False)
+
+    cols_to_show = [
+        "action",
+        "name_of_issuer",
+        "cusip",
+        "value_current_$B",
+        "value_previous_$B",
+        "change_$M",
+    ]
+    st.dataframe(
+        filtered[cols_to_show],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def _render_fund_tab(
     display_name: str,
     cik: str,
     *,
+    quarter_index: int,
     super_concentrated: bool,
 ) -> None:
-    """1 ファンドのタブコンテンツ。"""
-    with st.spinner(f"{display_name} の 13F を取得中…"):
-        df, status = _fetch_holdings(cik)
+    """1 ファンドのタブコンテンツ — 過去 4 四半期取得 → quarter_index で表示。
 
-    if df is None:
+    quarter_index=0 が最新。``quarter_index + 1`` 番目を「前期」として
+    Q-over-Q diff を計算する（前期がなければ diff サブタブで案内）。
+    """
+    with st.spinner(f"{display_name} の 13F 履歴を取得中…"):
+        history, status = _fetch_holdings_history(cik, limit=4)
+
+    if history is None:
         st.info(status)
         return
+
+    if quarter_index >= len(history):
+        st.warning(
+            f"📅 {quarter_index + 1} 期前のデータなし"
+            f"（取得可能 {len(history)} 期分）。"
+        )
+        return
+
+    df = history[quarter_index]
+    prev_df: pd.DataFrame | None = (
+        history[quarter_index + 1]
+        if quarter_index + 1 < len(history)
+        else None
+    )
 
     if super_concentrated and len(df) > SUPER_CONCENTRATED_MAX_HOLDINGS:
         st.caption(
@@ -220,12 +338,31 @@ def _render_fund_tab(
         )
         return
 
-    _render_summary(df)
-    st.divider()
-    _render_top_pie(df)
-    st.subheader("📋 全保有銘柄")
-    _render_holdings_table(df)
-    _render_provenance(df)
+    inner_tabs = st.tabs(["📋 保有銘柄", "🔄 前期比 diff"])
+
+    with inner_tabs[0]:
+        _render_summary(df)
+        st.divider()
+        _render_top_pie(df)
+        st.subheader("全保有銘柄")
+        _render_holdings_table(df)
+        _render_provenance(df)
+
+    with inner_tabs[1]:
+        if prev_df is None:
+            st.info(
+                "ℹ️ 前期データがないため diff 計算不可"
+                "（取得可能な最古の四半期、または 1 期しか取得できていない）。"
+            )
+        else:
+            cur_date = pd.Timestamp(df["report_date"].iloc[0]).strftime("%Y-%m-%d")
+            prev_date = pd.Timestamp(
+                prev_df["report_date"].iloc[0]
+            ).strftime("%Y-%m-%d")
+            st.caption(f"今期: **{cur_date}** ⇄ 前期: **{prev_date}**")
+            diff_df = compute_qoq_diff(df, prev_df)
+            _render_qoq_diff(diff_df, key_suffix=cik)
+            _render_provenance(df)
 
 
 # ============================================================
@@ -240,11 +377,15 @@ with st.sidebar:
         list(FUNDS.keys()),
         default=list(FUNDS.keys()),
     )
-    quarter = st.selectbox(
+    quarter_label = st.selectbox(
         "四半期",
-        ["最新", "2026Q1", "2025Q4", "2025Q3"],
-        help="四半期末から提出義務があるため、最新でも 45 日程度遅れる",
+        list(QUARTER_LABELS),
+        help=(
+            "13F は四半期末から 45 日以内に提出義務（最新でも 45 日遅れ）。"
+            " 過去 4 期分まで動的取得対応。"
+        ),
     )
+    quarter_index = QUARTER_LABELS.index(quarter_label)
     super_concentrated = st.checkbox(
         "スーパー集中ファンド優先（5 銘柄以下）",
         value=False,
@@ -264,12 +405,6 @@ with st.sidebar:
 # メインコンテンツ
 # ============================================================
 
-if quarter != "最新":
-    st.warning(
-        f"📅 {quarter} の過去四半期表示は未実装（Phase 後段予定）。"
-        " 現在は「最新」のみサポート。"
-    )
-
 if not selected:
     st.info("サイドバーで追跡対象ファンドを選択してください。")
 else:
@@ -279,7 +414,10 @@ else:
             display_name = selected[i]
             cik = FUNDS[display_name]
             _render_fund_tab(
-                display_name, cik, super_concentrated=super_concentrated
+                display_name,
+                cik,
+                quarter_index=quarter_index,
+                super_concentrated=super_concentrated,
             )
 
 # ============================================================
