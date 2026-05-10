@@ -626,14 +626,32 @@ with st.sidebar:
         ["US", "TO"],
         index=0,
         disabled=not real_mode,
-        help="US=米国、TO=東証（日本株）",
+        help="US=米国、TO=東証（日本株）。東証は yfinance 経由で `.T` 形式に自動変換",
+    )
+
+    # 取引所別デフォルトティッカー（時価総額上位 + Magic Formula 候補のミックス）
+    # 米国: GAFAM + 高 ROC 候補。日本: TOPIX Core30 から自動車/技術/消費者向け代表
+    _DEFAULT_TICKERS_US = (
+        "AAPL, MSFT, GOOGL, AMZN, META, NVDA, JNJ, PG, KO, WMT"
+    )
+    _DEFAULT_TICKERS_JP = (
+        "7203, 6758, 9984, 6861, 6098, 8035, 4063, 6981, 7974, 8001"
     )
 
     if real_mode:
+        _default = (
+            _DEFAULT_TICKERS_JP if exchange == "TO" else _DEFAULT_TICKERS_US
+        )
+        if exchange == "TO":
+            st.caption(
+                "🇯🇵 東証選択中: 4 桁証券コードで入力（例: 7203 = トヨタ）。"
+                "yfinance が `.T` 付きで取得します。"
+            )
         ticker_text = st.text_area(
             "ティッカー（カンマまたは改行区切り）",
-            value="AAPL, MSFT, GOOGL, AMZN, META, NVDA, JNJ, PG, KO, WMT",
+            value=_default,
             height=120,
+            key=f"ticker_input_{exchange}",  # 取引所切替時の再描画
         )
         tickers = parse_tickers(ticker_text)
         st.caption(f"対象 {len(tickers)} 銘柄")
