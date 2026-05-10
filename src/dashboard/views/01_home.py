@@ -37,6 +37,12 @@ from src.dashboard.widgets.regime_signal import render_regime_signal
 from src.dashboard.widgets.risk_metrics_panel import render_risk_metrics_panel
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDAPIError, EODHDClient
+from src.data.jquants import (
+    JQuantsAPIError,
+    JQuantsAuthError,
+    JQuantsClient,
+    JQuantsConfigError,
+)
 from src.portfolio.atr_alert_logger import log_atr_alert
 from src.portfolio.holdings import Portfolio
 from src.portfolio.valuation import (
@@ -175,19 +181,67 @@ if evaluate_button:
     if not settings.eodhd_api_key:
         st.error("EODHD_API_KEY が未設定です（`.env` に追加してください）")
     else:
-        with st.spinner("EODHD から最新価格を取得中..."):
+        with st.spinner("最新価格を取得中（米国: EODHD / 日本: J-Quants）..."):
             cache = ParquetCache(base_dir=settings.cache_dir)
-            client = EODHDClient(api_key=settings.eodhd_api_key, cache=cache)
+            eodhd_client = EODHDClient(
+                api_key=settings.eodhd_api_key, cache=cache
+            )
+            # 日本株は J-Quants v2（CLAUDE.md §5: 日本株の正本）。
+            # API key 未設定なら経路停止 → エラーメッセージで誘導する。
+            jquants_client: JQuantsClient | None
+            if settings.jquants_api_key:
+                jquants_client = JQuantsClient(
+                    api_key=settings.jquants_api_key, cache=cache
+                )
+            else:
+                jquants_client = None
 
             today = date.today()
             from_d = today - timedelta(days=10)
+            # J-Quants Light は 12 週間遅延データのみ提供（Standard 以上で当日）。
+            # JP 銘柄は to_date を ~85 日前に下げて Light 提供範囲に収める。
+            jp_to = today - timedelta(days=90)
+            jp_from = jp_to - timedelta(days=14)
 
             current_prices_jpy: dict[str, Decimal] = {}
+            jp_used_delayed = False  # UI で 12 週遅延注意を出すフラグ
             errors: list[str] = []
 
             for h in portfolio.holdings:
+                if h.exchange == "JP":
+                    if jquants_client is None:
+                        errors.append(
+                            f"{h.ticker}: JQUANTS_API_KEY 未設定。"
+                            "日本株は J-Quants v2（jpx-jquants.com）の API key が必要"
+                        )
+                        continue
+                    try:
+                        df = jquants_client.get_eod(
+                            h.ticker,
+                            from_date=jp_from,
+                            to_date=jp_to,
+                        )
+                    except (JQuantsAuthError, JQuantsConfigError) as exc:
+                        errors.append(f"{h.ticker}: 認証エラー: {exc}")
+                        continue
+                    except (JQuantsAPIError, httpx.HTTPError) as exc:
+                        errors.append(
+                            f"{h.ticker}: J-Quants API: {type(exc).__name__}"
+                        )
+                        continue
+                    if len(df) == 0 or "Close" not in df.columns:
+                        errors.append(f"{h.ticker}: データ無し")
+                        continue
+                    # 日本株は JPY 直接、為替変換不要
+                    current_prices_jpy[h.ticker] = Decimal(
+                        str(df["Close"].iloc[-1])
+                    )
+                    jp_used_delayed = True
+                    continue
+
+                # 米国 / その他は EODHD
                 try:
-                    df = client.get_eod(
+                    df = eodhd_client.get_eod(
                         h.ticker,
                         from_date=from_d,
                         to_date=today,
@@ -215,6 +269,13 @@ if evaluate_button:
         if errors:
             st.warning(
                 "一部銘柄の取得に失敗:\n" + "\n".join(f"- {e}" for e in errors)
+            )
+
+        if jp_used_delayed:
+            st.info(
+                "ℹ️ **日本株は 12 週間遅延データ** を表示中（J-Quants Light プラン制限）。"
+                f"参照日: {jp_to.isoformat()}（≒ 90 日前）。"
+                "リアルタイム評価には Standard プラン以上へのアップグレードが必要。"
             )
 
         valuations = evaluate_portfolio(
@@ -278,8 +339,12 @@ if evaluate_button:
                 _h = portfolio.by_ticker(v.ticker)
                 if _h is None:
                     continue
+                # 日本株はリスク指標 1 年計算では現状スキップ（J-Quants の
+                # 1 年フル取得は別フェーズ。米国株のみで近似計算する）。
+                if _h.exchange == "JP":
+                    continue
                 try:
-                    df_year = client.get_eod(
+                    df_year = eodhd_client.get_eod(
                         v.ticker,
                         from_date=one_year_ago,
                         to_date=today,
@@ -340,8 +405,12 @@ if evaluate_button:
 
             atr_alerts = []
             for h in portfolio.holdings:
+                # 日本株は ATR 計算で現状スキップ（J-Quants の OHLC 経路は
+                # 別フェーズ。米国株のみで規律適用）。
+                if h.exchange == "JP":
+                    continue
                 try:
-                    df_atr = client.get_eod(
+                    df_atr = eodhd_client.get_eod(
                         h.ticker,
                         from_date=today - timedelta(days=90),
                         to_date=today,
