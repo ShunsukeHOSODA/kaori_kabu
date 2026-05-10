@@ -1,0 +1,26 @@
+{
+  "directory": {
+    "name": "/Archives/edgar/data/1067983/000095012326000099",
+    "parent-dir": "/cgi-bin/browse-edgar?action=getcompany",
+    "item": [
+      {
+        "last-modified": "2026-02-14 16:30:00",
+        "name": "primary_doc.xml",
+        "type": "text",
+        "size": "5432"
+      },
+      {
+        "last-modified": "2026-02-14 16:30:00",
+        "name": "form13fInfoTable.xml",
+        "type": "text",
+        "size": "12345"
+      },
+      {
+        "last-modified": "2026-02-14 16:30:00",
+        "name": "0000950123-26-000099-index.htm",
+        "type": "text.htm",
+        "size": "2000"
+      }
+    ]
+  }
+}
