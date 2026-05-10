@@ -28,6 +28,7 @@ import streamlit as st
 from src.analysis._provenance import get_current_git_commit
 from src.analysis.regime import RegimeResult, detect_regime_with_provenance
 from src.analysis.risk_metrics import (
+    compute_benchmark_comparison,
     compute_portfolio_returns,
     compute_risk_metrics,
 )
@@ -388,7 +389,40 @@ if evaluate_button:
                         metrics = compute_risk_metrics(
                             portfolio_returns, input_data_source="EODHD"
                         )
-                        render_risk_metrics_panel(metrics)
+                        # ベンチマーク (S&P500 = SPY) との比較計算。
+                        # SPY 取得失敗時はベンチマーク無しで描画継続。
+                        bench_cmp = None
+                        try:
+                            spy_df = eodhd_client.get_eod(
+                                "SPY",
+                                from_date=one_year_ago,
+                                to_date=today,
+                                exchange="US",
+                            )
+                            if (
+                                "date" in spy_df.columns
+                                and "close" in spy_df.columns
+                                and len(spy_df) >= 30
+                            ):
+                                spy_close = pd.Series(
+                                    spy_df["close"].astype(float).values,
+                                    index=pd.to_datetime(spy_df["date"]),
+                                    name="SPY",
+                                )
+                                spy_returns = spy_close.pct_change().dropna()
+                                bench_cmp = compute_benchmark_comparison(
+                                    portfolio_returns,
+                                    spy_returns,
+                                    benchmark_label="S&P500",
+                                    input_data_source="EODHD (SPY)",
+                                )
+                        except (
+                            EODHDAPIError,
+                            httpx.HTTPError,
+                            ValueError,
+                        ):
+                            bench_cmp = None
+                        render_risk_metrics_panel(metrics, comparison=bench_cmp)
                     except (ValueError, ZeroDivisionError) as exc:
                         st.warning(f"リスク指標計算エラー: {exc}")
 
