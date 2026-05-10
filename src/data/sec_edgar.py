@@ -412,13 +412,44 @@ class SECEdgarClient:
 
     @staticmethod
     def _find_infotable_filename(index_json: dict[str, Any]) -> str | None:
-        """``directory.item`` から ``*infotable*.xml`` を検索。"""
+        """``directory.item`` から InfoTable XML を検索（2 段判別）。
+
+        13F filing の XML 命名は提出代理人によって揺れる:
+
+        - 明示命名: ``form13fInfoTable.xml`` / ``infoTable.xml``（手動・旧）
+        - 数値命名: ``50240.xml`` 等（Donnelley 等の代理人が採番）
+
+        判別フロー:
+          1. ``"infotable"`` 部分一致 — 明示命名を最優先
+          2. ``primary_doc.xml`` / ``*-index.*`` / ``*-headers.*`` を除外した
+             残り ``.xml`` — 13F-HR は通常 InfoTable と表紙の 2 ファイルのみ
+             なので、表紙を除けば InfoTable
+
+        Step 2 で誤って表紙を選んだ場合、:func:`parse_information_table`
+        がルート要素チェックで :class:`EDGARParseError` を上げるため、
+        サイレント失敗にはならない。
+        """
         directory = index_json.get("directory", {})
         items = directory.get("item", [])
+
+        # Step 1: 明示命名（"infotable" 部分一致）
         for item in items:
             name = item.get("name", "")
             if name.lower().endswith(".xml") and "infotable" in name.lower():
                 return name
+
+        # Step 2: フォールバック — primary_doc / index / headers 以外の .xml
+        for item in items:
+            name = item.get("name", "")
+            lname = name.lower()
+            if not lname.endswith(".xml"):
+                continue
+            if lname == "primary_doc.xml":
+                continue
+            if "-index" in lname or "-headers" in lname:
+                continue
+            return name
+
         return None
 
     def _request(self, url: str, *, endpoint: str) -> httpx.Response:

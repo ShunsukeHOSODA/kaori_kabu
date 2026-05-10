@@ -460,3 +460,91 @@ class TestRequestHeaders:
             kwargs = call.kwargs
             headers = kwargs.get("headers", {})
             assert headers.get("User-Agent") == ua
+
+
+# ============================================================
+# _find_infotable_filename: 命名揺れ吸収（Donnelley 数値命名対応）
+# ============================================================
+
+
+@pytest.mark.unit
+class TestFindInfoTableFilename:
+    """提出代理人ごとの XML 命名揺れを吸収する 2 段判別ロジック。
+
+    実機検証 (.steering/20260510-13f-dynamic) で Berkshire Q4 2025 提出が
+    Donnelley 採番の数値ファイル名 (``50240.xml``) で実体化していることを
+    確認。Step 1 の "infotable" 部分一致だけだと取りこぼすため、
+    Step 2 の表紙除外フォールバックを追加。
+    """
+
+    def test_Step1_infotable部分一致が最優先(self) -> None:
+        from data.sec_edgar import SECEdgarClient
+
+        index_json = {
+            "directory": {
+                "item": [
+                    {"name": "primary_doc.xml"},
+                    {"name": "form13fInfoTable.xml"},
+                    {"name": "extra.xml"},  # Step 2 候補
+                ]
+            }
+        }
+        # Step 1 が先に hit するので extra.xml ではなく form13fInfoTable.xml
+        result = SECEdgarClient._find_infotable_filename(index_json)
+        assert result == "form13fInfoTable.xml"
+
+    def test_Step2_Donnelley数値命名_primary_doc除外(self) -> None:
+        """Donnelley 提出（実機 Berkshire 2026 提出と同形）。"""
+        from data.sec_edgar import SECEdgarClient
+
+        index_json = {
+            "directory": {
+                "item": [
+                    {"name": "0001193125-26-054580-index-headers.html"},
+                    {"name": "0001193125-26-054580-index.html"},
+                    {"name": "0001193125-26-054580.txt"},
+                    {"name": "50240.xml"},  # ← InfoTable
+                    {"name": "primary_doc.xml"},
+                ]
+            }
+        }
+        result = SECEdgarClient._find_infotable_filename(index_json)
+        assert result == "50240.xml"
+
+    def test_Step2_index_headers系XMLは除外(self) -> None:
+        """``*-index.xml`` / ``*-headers.xml`` は誤検知しない。"""
+        from data.sec_edgar import SECEdgarClient
+
+        index_json = {
+            "directory": {
+                "item": [
+                    {"name": "primary_doc.xml"},
+                    {"name": "0000950123-25-009999-index.xml"},
+                    {"name": "0000950123-25-009999-headers.xml"},
+                    {"name": "data.xml"},  # ← これが残る
+                ]
+            }
+        }
+        result = SECEdgarClient._find_infotable_filename(index_json)
+        assert result == "data.xml"
+
+    def test_該当なし_None返却(self) -> None:
+        from data.sec_edgar import SECEdgarClient
+
+        index_json = {
+            "directory": {
+                "item": [
+                    {"name": "primary_doc.xml"},
+                    {"name": "cover.html"},
+                ]
+            }
+        }
+        assert SECEdgarClient._find_infotable_filename(index_json) is None
+
+    def test_directory欠損_None返却(self) -> None:
+        from data.sec_edgar import SECEdgarClient
+
+        assert SECEdgarClient._find_infotable_filename({}) is None
+        assert (
+            SECEdgarClient._find_infotable_filename({"directory": {}}) is None
+        )
