@@ -129,10 +129,12 @@
 - ✅ 10 req/sec 制限 — 5 ファンド × 3 段呼び出し = 最大 15 req でも制限内、
   `_enforce_rate_limit` で間隔保証
 
-### 4.2 過去四半期 13F 表示（~2 時間）
-- `SECEdgarClient.get_13f_history(cik, limit=4)` メソッド追加
-- 03_thirteen_f.py の quarter selectbox を実装に接続
-- 前期比 diff 計算（design.md §10.3）
+### 4.2 過去四半期 13F + Q-over-Q diff ✅ 完了（2026-05-10、Phase D）
+**詳細は §9 参照。**
+- `SECEdgarClient.get_13f_history(cik, limit=4)` 実装
+- `compute_qoq_diff(current, previous, threshold=0.05)` 純粋関数追加
+- 03_thirteen_f.py の quarter selectbox 動的化（最新 / 1 期前 / 2 期前 / 3 期前）
+- 前期比 diff サブタブ実装（5 区分: 新規買い / 増持 / 減持 / 売却 / 保持）
 
 ### 4.3 Phase 3.3 候補
 - Magic Formula スクリーナー実装（`docs/product-requirements.md` MVP #1）
@@ -179,7 +181,7 @@ EODHD で `7203.TO` (トヨタ自動車 東京) が 404。原因調査未着手�
 - [x] §9.2 キャッシュ: `data/cache/SEC_EDGAR/13f_{cik}_latest.parquet`、TTL 90 日
 - [x] §9.8 Provenance: source / fetched_at / endpoint / params_hash / cache_hit / cache_age_sec を全 DataFrame に付与
 - [x] §11 安全装置: API キー埋め込みなし、User-Agent は `.env` のみ、PII 漏洩防止
-- [x] §12 テスト: pytest **311 件 PASS**、新規ファイル 85-93% カバレッジ
+- [x] §12 テスト: pytest **323 件 PASS**（306 + Donnelley 5 件 + Phase D 12 件）、新規ファイル 85-93% カバレッジ
 
 ---
 
@@ -240,7 +242,122 @@ Step 2 で誤って表紙を選んだ場合、`parse_information_table` の
 ### 8.6 後送り（次回検討）
 
 - 13F-NT (守秘要請) を明示的に検出して UI 表示を分岐（現在は `EDGARNotFoundError`
-  で「13F-HR 提出なし」と一括表示。`form == "13F-NT"` を `_find_latest_13fhr` で
+  で「13F-HR 提出なし」と一括表示。`form == "13F-NT"` を `_find_13fhr_filings` で
   判定して別メッセージ「現四半期は守秘要請中」を出すと UX 向上）
 - Pabrai が現在 13F-NT 状態の理由調査（AUM が $100M を割って提出義務消滅した
   可能性。CIK 確認 / 過去四半期で 13F-HR 取得テスト）
+
+---
+
+## 9. Phase D — 過去四半期 13F + Q-over-Q diff（2026-05-10、§4.2 完了）
+
+### 9.1 実装サマリー
+
+design.md §10.3 に沿って Phase A-C の動的取得を「過去 4 期分」に拡張、
+Mohnish Pabrai の Dhandho 哲学が要求する「保有変化の可視化」を実現。
+
+| ファイル | 変更 |
+|---|---|
+| `src/data/sec_edgar.py` | `_find_latest_13fhr` → `_find_13fhr_filings(limit)` リファクタ、`_fetch_filing_to_df` ヘルパー抽出、`get_13f_history(cik, limit=4)` 新設、`compute_qoq_diff(cur, prev, threshold=0.05)` 純粋関数新設 |
+| `src/dashboard/views/03_thirteen_f.py` | quarter selectbox を 4 期固定ラベル動的化、`_fetch_holdings` → `_fetch_holdings_history` 拡張、内部タブ `📋 保有銘柄` / `🔄 前期比 diff` 追加、`_render_qoq_diff` 新設 |
+| `tests/unit/data/test_sec_edgar.py` | `TestGet13FHistory` 5 件 + `TestComputeQoQDiff` 7 件 |
+
+### 9.2 sec_edgar.py の API 拡張
+
+```python
+# 新規公開 API
+def compute_qoq_diff(
+    current: pd.DataFrame,
+    previous: pd.DataFrame,
+    *,
+    threshold: float = 0.05,
+) -> pd.DataFrame:
+    """Q-over-Q 差分を cusip ベースで 5 区分:
+       新規買い / 売却 / 増持 / 減持 / 保持。"""
+
+class SECEdgarClient:
+    def get_13f_history(
+        self, cik: str, *, limit: int = 4,
+        cache_ttl_sec: int = DEFAULT_CACHE_TTL_SEC,
+    ) -> list[pd.DataFrame]:
+        """直近 limit 個の 13F-HR を新しい順で返す。"""
+
+    # 内部リファクタ
+    def _fetch_filing_to_df(self, cik_norm, filing) -> pd.DataFrame: ...
+    def _find_13fhr_filings(
+        self, submissions, cik_norm, *, limit: int = 1
+    ) -> list[Filing]: ...  # 旧 _find_latest_13fhr を limit パラメータ化
+```
+
+**キャッシュ設計**:
+- `get_latest_13f`: `13f_{cik}_latest` cache key（既存維持）
+- `get_13f_history`: 各 filing 個別に `13f_{cik}_{accession_no_clean}` cache key
+- 2 つのキー空間は独立 → submissions JSON は毎回 fetch（最新性チェック）、
+  個別 filing は 90 日 TTL で再利用
+
+### 9.3 03_thirteen_f.py UI 拡張
+
+```text
+[サイドバー]
+  四半期: [最新 ▼ / 1 期前 / 2 期前 / 3 期前]
+  ↓ quarter_index = 0..3
+
+[ファンドタブ]
+  └─ 内部タブ:
+     ├─ 📋 保有銘柄  — _render_summary + _render_top_pie + _render_holdings_table
+     └─ 🔄 前期比 diff — 5 区分メトリクス + multiselect フィルタ + ソート済テーブル
+        + ⓘ Provenance
+```
+
+### 9.4 実装中に発見されたバグ — `StreamlitDuplicateElementId`
+
+**症状**: 5 ファンドタブそれぞれで `_render_qoq_diff` が呼ばれる際、内部の
+`st.multiselect("表示する区分", ...)` が同 type + 同 parameters で auto ID
+衝突 → `StreamlitDuplicateElementId` 例外。
+
+**修正**: `_render_qoq_diff(diff_df, *, key_suffix: str)` にシグネチャ拡張、
+呼び出し側 `_render_fund_tab` で `key_suffix=cik` を渡し、
+`key=f"qoq_filter_{key_suffix}"` で widget ID を unique 化。
+
+CIK は 5 ファンド全件で一意 → 衝突解消。
+
+### 9.5 追加した unit test（12 件）
+
+**TestGet13FHistory** (5 件):
+- `test_デフォルト_limit_4_新しい順`
+- `test_limit_2_先頭2件のみ返却`
+- `test_13F_HR未提出は_EDGARNotFoundError`
+- `test_キャッシュヒット時_2回目はsubmissionsのみ`（cache 設計の検証）
+- `test_各DataFrameにProvenance付与`
+
+**TestComputeQoQDiff** (7 件):
+- `test_新規買い_前期NaN_今期あり`
+- `test_売却_前期あり_今期NaN`
+- `test_増持_value_diff_5パーセント超過`
+- `test_減持_value_diff_マイナス5パーセント超過`
+- `test_保持_5パーセント以内`
+- `test_threshold_カスタム閾値`
+- `test_出力カラム_6種`
+
+### 9.6 検証
+
+- `pytest tests/unit/ --no-cov -m unit -q` → **323 件 PASS**（311 + 12 新規）
+- streamlit + playwright 実機検証:
+  - **Berkshire 前期比 diff (2025-12-31 ⇄ 2025-09-30)**:
+    新規買い 13 / 増持 273 / 減持 245 / 売却 11 / 保持 24 銘柄
+  - quarter selectbox 「1 期前」切替で **2025-09-30 報告期** に動的更新
+  - multiselect 区分フィルタ動作 OK
+  - ⓘ Provenance 全 6 メタデータ表示
+
+**スクリーンショット証跡**:
+- `.playwright-mcp/13f-qoq-diff-verified.png`（前期比 diff サブタブ）
+- `.playwright-mcp/13f-quarter-1-period-back-verified.png`（1 期前切替）
+
+### 9.7 後送り（次回検討）
+
+- **過去四半期表示で前期データ不足時の UX**: quarter_index=3 だと前期 data
+  なしで diff サブタブが「前期データなし」表示。limit を動的増やす案あり
+- **Q-over-Q diff の name 重複**: 同 issuer name で異 CUSIP（Apple class A/B 等）
+  は別行扱い。issuer ベースで集約するオプション追加検討
+- **過去四半期の cache 有効期限調整**: 過去四半期は変化しないため
+  TTL=infinity (or 365 日) でも問題なし。現在は 90 日固定
