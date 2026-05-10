@@ -34,6 +34,9 @@ class Settings(BaseSettings):
 
     # ===== データソース API キー =====
     eodhd_api_key: str = Field(default="", alias="EODHD_API_KEY")
+    # J-Quants v2 (2025-12-22 以降) — 永続 API key 認証 (x-api-key ヘッダ)
+    jquants_api_key: str = Field(default="", alias="JQUANTS_API_KEY")
+    # J-Quants v1 (deprecated) — refresh_token 認証、互換のため残置
     jquants_refresh_token: str = Field(default="", alias="JQUANTS_REFRESH_TOKEN")
     jquants_plan: str = Field(default="light", alias="JQUANTS_PLAN")
     sec_edgar_user_agent: str = Field(default="", alias="SEC_EDGAR_USER_AGENT")
