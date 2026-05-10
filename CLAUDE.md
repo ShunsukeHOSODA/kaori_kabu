@@ -61,7 +61,7 @@ docs/  ← 永続的（北極星）
 |---|---|---|
 | **EODHD EOD+Intraday Extended** | $29.99 (≈4,500 円) | 米国 + 60+ 取引所 + 日本株 EOD（30+ 年）+ 米国 Intraday from 2004。**Fundamentals 不可** |
 | **yfinance（ファンダ補完）** | 無料 | Yahoo Finance 非公式 API。米国大型株 ◎、小型・日本株 △、規約グレー、個人利用限定 |
-| **J-Quants Light** | 1,650 円 | 日本株の正本（JPX 公式、当日データ）|
+| **J-Quants Light** | 1,650 円 | 日本株の正本（JPX 公式、**12 週間遅延データ**）。当日データには Standard 以上要 |
 | SEC EDGAR | 無料 | 米国 13F、ファンダメンタル原本、Form 4 |
 | FRED | 無料 | 米マクロ |
 | EDINET / e-Stat / 日銀 | 無料 | 日本マクロ・有報 |
