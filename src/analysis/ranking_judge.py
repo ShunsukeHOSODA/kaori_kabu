@@ -16,7 +16,10 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone  # noqa: F401 — timezone は将来 _build_metadata で使用
+from decimal import Decimal
 from typing import Final
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -34,6 +37,23 @@ ACADEMIC_SOURCE: Final[str] = (
 # 禁止パターン（一本線予測を 7 種の正規表現で検出）
 # CLAUDE.md §9.3 「一本線の価格予測は禁止」を正規表現で機械的に強制する。
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 禁止予測フィールド（Pydantic スキーマレベルで一本線予測を構造的に拒否）
+# CLAUDE.md §9.3 三層防御の中間層。FORBIDDEN_PATTERNS（正規表現）と組み合わせて
+# システムプロンプト・スキーマ・出力テキストの 3 レイヤーで予測値の侵入を防ぐ。
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_PREDICTION_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "target_price",
+        "expected_return",
+        "time_horizon",
+        "price_target",
+        "forecast_price",
+    }
+)
+
 
 FORBIDDEN_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     # パターン 1: ドル建て価格（例: $200, $ 1,500）
@@ -135,3 +155,85 @@ class RankingMetadata:
     calculated_at: datetime
     academic_source: str
     code_commit: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Pydantic v2 BaseModel — Sonnet 判定結果の検証スキーマ
+# ---------------------------------------------------------------------------
+
+
+class RankingResult(BaseModel):
+    """Sonnet ランキング判定の構造化結果（CLAUDE.md §9.3 三層防御の中間層）。
+
+    notes-5.2.md §1.2 案 C 採用:
+        - ``extra='forbid'`` で未定義フィールドを構造的に reject
+        - ``model_validator(mode='before')`` で `FORBIDDEN_PREDICTION_FIELDS`
+          に該当するキーが含まれていれば即座に ValueError を送出
+        - 2 層防御により ``target_price`` 等の予測フィールドが Sonnet 出力
+          として返ってきても確実にパースに失敗させる
+
+    Attributes:
+        ranking_score: 0-100 の総合ランキングスコア
+        recommendation_summary: 推奨サマリー（最大 150 文字）
+        supporting_signals: 支持シグナル（最大 5 件のタプル）
+        risk_signals: リスクシグナル（最大 5 件のタプル）
+        counter_view: 反対意見・カウンタービュー（最大 200 文字）
+        lens_views: 3 レンズ視点
+            （キーは ``short_term`` / ``long_term`` / ``dividend`` 固定）
+        confidence: 確信度（0.0-1.0 の Decimal）
+        confidence_adjusted: HMM レジーム調整後の確信度（0.0-1.0）
+        kelly_multiplier: Half-Kelly 乗数（0.0-1.0、Thorp 2006 準拠）
+        fallback_reason: フォールバック理由（通常時 None）
+        metadata: Provenance 必須メタデータ（CLAUDE.md §9.8.2）
+
+    Raises:
+        ValidationError: 一本線予測フィールド検出時、未定義 extra フィールド
+            検出時、または各フィールドの制約違反時。
+    """
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+    )
+
+    ranking_score: int = Field(ge=0, le=100)
+    recommendation_summary: str = Field(max_length=150)
+    supporting_signals: tuple[str, ...] = Field(max_length=5)
+    risk_signals: tuple[str, ...] = Field(max_length=5)
+    counter_view: str = Field(max_length=200)
+    lens_views: dict[str, str]
+    confidence: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
+    confidence_adjusted: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
+    kelly_multiplier: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
+    fallback_reason: str | None = None
+    metadata: RankingMetadata
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_prediction_fields(cls, data: object) -> object:
+        """一本線予測フィールドが含まれていれば即座に reject する（案 C 防御層 1）。
+
+        CLAUDE.md §9.3 違反を構造レベルで弾く。dict 以外は素通しして Pydantic
+        の通常検証に任せる。
+        """
+        if not isinstance(data, dict):
+            return data
+        hit = FORBIDDEN_PREDICTION_FIELDS & data.keys()
+        if hit:
+            raise ValueError(
+                f"一本線予測フィールド検出 (CLAUDE.md §9.3 違反): {sorted(hit)}"
+            )
+        return data
+
+    @model_validator(mode="after")
+    def _validate_lens_views_keys(self) -> RankingResult:
+        """lens_views が必須 3 キー（short_term / long_term / dividend）か検証。"""
+        required = {"short_term", "long_term", "dividend"}
+        actual = set(self.lens_views.keys())
+        if actual != required:
+            raise ValueError(
+                "lens_views は 3 キー固定 (short_term/long_term/dividend) "
+                f"が必須、実際: {sorted(actual)}"
+            )
+        return self
