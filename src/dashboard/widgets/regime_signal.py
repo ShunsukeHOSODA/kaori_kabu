@@ -67,6 +67,15 @@ def render_regime_signal(
     else:
         container.success(msg)  # type: ignore[attr-defined]
 
+    # VIX 取得失敗 → SPY realized vol 代理使用時の警告（§4.1 #2、handoff-phase4.md）。
+    # Provenance §9.8: vix_source が "realized_vol_proxy_v1" のときのみ表示。
+    if result.metadata.vix_source == "realized_vol_proxy_v1":
+        container.warning(  # type: ignore[attr-defined]
+            "⚠️ VIX 取得失敗 → SPY realized vol を代理使用中。"
+            "判定精度が低下している可能性があります"
+            "（市場の恐怖指数 = implied vol に対し、代理は過去 30 日 realized vol）"
+        )
+
     # 詳細（学習期間・出所・判定方法）は折りたたみで開示
     expander = container.expander("ⓘ 詳細（HMM 学習結果）")  # type: ignore[attr-defined]
     with expander:
@@ -74,3 +83,5 @@ def render_regime_signal(
         if result.metadata.training_period:
             expander.write(f"学習期間: {result.metadata.training_period}")
         expander.write(f"出所: {result.metadata.academic_source}")
+        if result.metadata.vix_source:
+            expander.write(f"VIX 出所: {result.metadata.vix_source}")

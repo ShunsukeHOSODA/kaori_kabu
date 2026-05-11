@@ -263,3 +263,94 @@ class TestRegimeWithProvenance:
         assert result.metadata.n_components == 3
         assert result.metadata.calculated_at.tzinfo is not None
         assert result.metadata.input_data_source == "synthetic_test"
+
+
+# ---------------------------------------------------------------------------
+# VIX 代替: realized volatility（§4.1 #2、handoff-phase4.md）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestComputeRealizedVolatility:
+    """SPY の log returns 由来の年率ボラを VIX 代理として算出。
+
+    EODHD INDX 経路で VIX 取得失敗時のフォールバック。
+    VIX (通常 10-50 範囲) と同じ % スケールに揃えるため × 100 する。
+    """
+
+    def test_基本ケース_NaN除去後の年率ボラを返す(self) -> None:
+        """rolling 30 営業日 std × sqrt(252) × 100 → 同 index の Series。"""
+        from analysis.regime import compute_realized_volatility
+
+        prices, _ = _make_synthetic_market()
+        proxy = compute_realized_volatility(prices, window=30)
+
+        assert isinstance(proxy, pd.Series)
+        assert proxy.index.equals(prices.index)
+        # NaN を除いた後段の値は正の有限値
+        non_nan = proxy.dropna()
+        assert len(non_nan) > 0
+        assert (non_nan > 0).all()
+        assert np.isfinite(non_nan).all()
+
+    def test_先頭window日はNaN(self) -> None:
+        """log_return で先頭 1 日 NaN + rolling(30) で先頭 29 日 NaN → 計 30 日 NaN。"""
+        from analysis.regime import compute_realized_volatility
+
+        prices, _ = _make_synthetic_market()
+        proxy = compute_realized_volatility(prices, window=30)
+
+        # window=30 のとき先頭 30 行が NaN（1 行目 = log_return NaN, 2-30 行目 = rolling 不足）
+        assert proxy.iloc[:30].isna().all()
+        assert not proxy.iloc[30:].isna().any()
+
+    def test_スケールがVIXと整合する(self) -> None:
+        """合成データ（Bull 0.6%日次vol、Choppy 1.2%、Crisis 3.0% を年率化）の
+        realized vol proxy は概ね VIX の経験範囲（5-80 程度）に収まる。
+
+        日次 std = 0.006 → 年率 = 0.006 × sqrt(252) ≈ 0.095 → × 100 ≈ 9.5（Bull）
+        日次 std = 0.030 → 年率 = 0.030 × sqrt(252) ≈ 0.476 → × 100 ≈ 47.6（Crisis）
+        """
+        from analysis.regime import compute_realized_volatility
+
+        prices, _ = _make_synthetic_market()
+        proxy = compute_realized_volatility(prices, window=30).dropna()
+
+        # VIX の歴史的範囲（経験則）に収まる
+        assert proxy.min() >= 1.0
+        assert proxy.max() <= 200.0
+        # 中央値は二桁前半（合成データの平均的状態 = Choppy 1.2% vol 由来）
+        assert 5.0 < proxy.median() < 80.0
+
+
+@pytest.mark.unit
+class TestRegimeWithProvenanceVixSource:
+    """`vix_source` メタデータ（CLAUDE.md §9.8.2）— VIX 取得経路の Provenance。"""
+
+    def test_vix_sourceがmetadataに伝播する(self) -> None:
+        """detect_regime_with_provenance に vix_source="EODHD" を渡すと
+        result.metadata.vix_source に保存される。"""
+        from analysis.regime import detect_regime_with_provenance
+
+        prices, vix = _make_synthetic_market()
+        result = detect_regime_with_provenance(
+            prices,
+            vix,
+            input_data_source="synthetic_test",
+            vix_source="EODHD",
+        )
+
+        assert result.metadata.vix_source == "EODHD"
+
+    def test_vix_source未指定ならNone(self) -> None:
+        """後方互換: vix_source 引数を省略しても既存呼び出しは壊れない。"""
+        from analysis.regime import detect_regime_with_provenance
+
+        prices, vix = _make_synthetic_market()
+        result = detect_regime_with_provenance(
+            prices,
+            vix,
+            input_data_source="synthetic_test",
+        )
+
+        assert result.metadata.vix_source is None

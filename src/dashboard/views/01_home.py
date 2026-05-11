@@ -26,7 +26,11 @@ import pandas as pd
 import streamlit as st
 
 from src.analysis._provenance import get_current_git_commit
-from src.analysis.regime import RegimeResult, detect_regime_with_provenance
+from src.analysis.regime import (
+    RegimeResult,
+    compute_realized_volatility,
+    detect_regime_with_provenance,
+)
 from src.analysis.risk_metrics import (
     compute_benchmark_comparison,
     compute_portfolio_returns,
@@ -75,40 +79,63 @@ def _detect_market_regime_cached(
 ) -> RegimeResult | None:
     """SPY + VIX 過去 ~2 年から HMM で Bull / Choppy / Crisis 判定（24h キャッシュ）。
 
-    失敗時は None を返し、信号灯は「判定中」フォールバック表示になる。
+    VIX 取得失敗時は SPY realized vol を代理として使い（§4.1 #2、
+    handoff-phase4.md）、Crisis 判定の連続性を確保する。
+    代理使用時は ``metadata.vix_source = "realized_vol_proxy_v1"`` で UI 警告。
+
+    SPY も取れない致命ケースのみ ``None`` を返し、信号灯は「判定中」表示。
     """
+    cache = ParquetCache(base_dir=settings.cache_dir)
+    client = EODHDClient(api_key=api_key, cache=cache)
+    today_local = date.today()
+    from_d = today_local - timedelta(days=lookback_days)
+
+    # SPY 取得は必須（取れなければ HMM 学習不可）
     try:
-        cache = ParquetCache(base_dir=settings.cache_dir)
-        client = EODHDClient(api_key=api_key, cache=cache)
-        today_local = date.today()
-        from_d = today_local - timedelta(days=lookback_days)
         spy = client.get_eod(
             "SPY", exchange="US", from_date=from_d, to_date=today_local
         )
+        if "date" not in spy.columns:
+            return None
+        spy_close = spy.set_index(pd.to_datetime(spy["date"]))["close"]
+    except (EODHDAPIError, httpx.HTTPError, KeyError, IndexError, ValueError):
+        return None
+
+    # VIX 取得は best-effort（失敗時は realized vol で代理）
+    vix_close: pd.Series | None = None
+    try:
         vix = client.get_eod(
             "VIX", exchange="INDX", from_date=from_d, to_date=today_local
         )
-        # EODHDClient.get_eod は date を **列** として返す（int RangeIndex）。
-        # HMM 学習には日付ベースで SPY と VIX を整合させる必要がある。
-        if "date" not in spy.columns or "date" not in vix.columns:
+        if "date" in vix.columns:
+            vix_close = vix.set_index(pd.to_datetime(vix["date"]))["close"]
+    except (EODHDAPIError, httpx.HTTPError, KeyError, IndexError, ValueError):
+        vix_close = None
+
+    try:
+        if vix_close is not None:
+            common = spy_close.index.intersection(vix_close.index)
+            if len(common) >= 100:
+                return detect_regime_with_provenance(
+                    prices=spy_close.loc[common],
+                    vix=vix_close.loc[common],
+                    input_data_source="EODHD",
+                    vix_source="EODHD",
+                )
+        # フォールバック: SPY realized vol を VIX 代理として使う
+        if len(spy_close) < 100:
             return None
-        spy_close = spy.set_index(pd.to_datetime(spy["date"]))["close"]
-        vix_close = vix.set_index(pd.to_datetime(vix["date"]))["close"]
-        common = spy_close.index.intersection(vix_close.index)
+        vix_proxy = compute_realized_volatility(spy_close, window=30).dropna()
+        common = spy_close.index.intersection(vix_proxy.index)
         if len(common) < 100:
             return None
         return detect_regime_with_provenance(
             prices=spy_close.loc[common],
-            vix=vix_close.loc[common],
+            vix=vix_proxy.loc[common],
             input_data_source="EODHD",
+            vix_source="realized_vol_proxy_v1",
         )
-    except (
-        EODHDAPIError,
-        httpx.HTTPError,
-        KeyError,
-        IndexError,
-        ValueError,
-    ):
+    except (KeyError, IndexError, ValueError):
         return None
 
 

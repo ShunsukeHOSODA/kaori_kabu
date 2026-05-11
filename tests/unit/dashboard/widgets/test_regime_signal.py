@@ -147,3 +147,63 @@ class TestMetadataPreserved:
         render_regime_signal(result_no_period, container=container)
 
         container.success.assert_called_once()
+
+
+@pytest.mark.unit
+class TestVixProxyWarning:
+    """VIX realized vol 代理使用時の UI 警告（§4.1 #2、handoff-phase4.md）。"""
+
+    def _attach_expander_mock(self, container: MagicMock) -> None:
+        container.expander.return_value.__enter__ = MagicMock(
+            return_value=container.expander.return_value
+        )
+        container.expander.return_value.__exit__ = MagicMock(return_value=False)
+
+    def test_realized_vol_proxy使用時にwarningが追加表示される(self) -> None:
+        """vix_source == "realized_vol_proxy_v1" のとき
+        `container.warning(...)` が「VIX 取得失敗」メッセージ付きで呼ばれる。"""
+        result = _make_result("Bull")
+        result_proxy = replace(
+            result,
+            metadata=replace(result.metadata, vix_source="realized_vol_proxy_v1"),
+        )
+        container = MagicMock()
+        self._attach_expander_mock(container)
+
+        render_regime_signal(result_proxy, container=container)
+
+        # Bull の信号灯は success、追加で warning が呼ばれる
+        container.success.assert_called_once()
+        container.warning.assert_called_once()
+        warn_msg = container.warning.call_args[0][0]
+        assert "VIX 取得失敗" in warn_msg
+        assert "realized vol" in warn_msg.lower() or "代理" in warn_msg
+
+    def test_vix_source_が_EODHD_のときwarningは呼ばれない(self) -> None:
+        result = _make_result("Bull")
+        result_eodhd = replace(
+            result,
+            metadata=replace(result.metadata, vix_source="EODHD"),
+        )
+        container = MagicMock()
+        self._attach_expander_mock(container)
+
+        render_regime_signal(result_eodhd, container=container)
+
+        container.success.assert_called_once()
+        container.warning.assert_not_called()
+
+    def test_Crisis_かつ代理使用時_errorとwarning両方呼ばれる(self) -> None:
+        """信号灯本体（error）と代理警告（warning）は独立して両方表示される。"""
+        result = _make_result("Crisis")
+        result_proxy = replace(
+            result,
+            metadata=replace(result.metadata, vix_source="realized_vol_proxy_v1"),
+        )
+        container = MagicMock()
+        self._attach_expander_mock(container)
+
+        render_regime_signal(result_proxy, container=container)
+
+        container.error.assert_called_once()
+        container.warning.assert_called_once()

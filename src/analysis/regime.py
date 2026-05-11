@@ -84,6 +84,11 @@ class RegimeMetadata:
     training_period: str | None = None
     input_data_source: str | None = None
     code_commit: str | None = None
+    vix_source: str | None = None
+    """VIX 入力の出所。"EODHD" / "realized_vol_proxy_v1" / None。
+
+    代理ボラ使用時は UI で警告表示するための分岐キー（handoff-phase4.md §4.1）。
+    """
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,39 @@ class RegimeResult:
 # ---------------------------------------------------------------------------
 # 特徴量準備
 # ---------------------------------------------------------------------------
+
+
+def compute_realized_volatility(
+    prices: pd.Series,
+    window: int = 30,
+) -> pd.Series:
+    """SPY 終値から年率 realized volatility を VIX 代理として算出（§4.1 #2）。
+
+    EODHD INDX 経路で VIX 取得失敗時のフォールバック。
+    VIX は ann. implied vol (%) で通常 10-50 範囲なので、
+    realized vol を × 100 して同スケールに揃える。
+
+    計算:
+        log_return = ln(p_t / p_{t-1})
+        proxy = rolling(window).std(log_return) * sqrt(252) * 100
+
+    Args:
+        prices: 終値 Series（日付 index）
+        window: rolling 窓（営業日、既定 30 ≒ 1.5 ヶ月）
+
+    Returns:
+        VIX 代理 Series（同 index、先頭 ``window`` 行は NaN）。
+
+    Notes:
+        - 学術的に realized vol ≠ implied vol だが、HMM 学習の特徴量としては
+          高ボラ状態を識別する代替として十分機能する（Hamilton 1989 系の
+          regime-switching では realized vol を直接特徴量にする例が一般的）。
+        - 代理使用時は :class:`RegimeMetadata.vix_source` に
+          ``"realized_vol_proxy_v1"`` を入れて UI で警告表示する。
+    """
+    log_returns = np.log(prices / prices.shift(1))
+    realized_vol = log_returns.rolling(window).std() * ANNUALIZATION_FACTOR
+    return realized_vol * 100.0
 
 
 def prepare_features(prices: pd.Series, vix: pd.Series) -> pd.DataFrame:
@@ -310,11 +348,18 @@ def detect_regime_with_provenance(
     n_components: int = DEFAULT_N_COMPONENTS,
     random_state: int = DEFAULT_RANDOM_STATE,
     input_data_source: str | None = None,
+    vix_source: str | None = None,
 ) -> RegimeResult:
     """:func:`detect_regime` + 完全な provenance metadata 付与（CLAUDE.md §9.8.2）。
 
     入力データ期間・データ出所・git commit を metadata に追加し、
     後で「なぜこの状態判定か」を完全再現可能にする。
+
+    Args:
+        prices: 終値 Series
+        vix: VIX 入力（取得失敗時は :func:`compute_realized_volatility` の代理を渡す）
+        input_data_source: SPY 等 prices の出所
+        vix_source: VIX 入力の出所。"EODHD" / "realized_vol_proxy_v1" / None。
     """
     result = detect_regime(
         prices, vix, n_components=n_components, random_state=random_state
@@ -333,6 +378,7 @@ def detect_regime_with_provenance(
         training_period=training_period,
         input_data_source=input_data_source,
         code_commit=_get_current_git_commit(),
+        vix_source=vix_source,
     )
 
     return RegimeResult(
