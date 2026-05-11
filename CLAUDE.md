@@ -61,16 +61,18 @@ docs/  ← 永続的（北極星）
 |---|---|---|
 | **EODHD EOD+Intraday Extended** | $29.99 (≈4,500 円) | 米国 + 60+ 取引所 + 日本株 EOD（30+ 年）+ 米国 Intraday from 2004。**Fundamentals 不可** |
 | **yfinance（ファンダ補完）** | 無料 | Yahoo Finance 非公式 API。米国大型株 ◎、小型・日本株 △、規約グレー、個人利用限定 |
-| **J-Quants Light** | 1,650 円 | 日本株の正本（JPX 公式、**12 週間遅延データ**）。当日データには Standard 以上要 |
+| **J-Quants（現状 Free）** | 0 円 | 日本株の正本（JPX 公式）。**Free は 2 年履歴 + 12 週遅延**、Light(¥1,650) で 5 年 + 当日 EOD、Standard(¥3,300) で 10 年 + 信用取引データ。詳細は `docs/cost-budget.md` |
 | SEC EDGAR | 無料 | 米国 13F、ファンダメンタル原本、Form 4 |
 | FRED | 無料 | 米マクロ |
 | EDINET / e-Stat / 日銀 | 無料 | 日本マクロ・有報 |
 | Polymarket / Kalshi | 無料 | 予測市場（Fed 利上げ、選挙等） |
 | OpenInsider / WhaleWisdom 無料枠 | 無料 | インサイダー / 13F 補完 |
 
-**月額合計: 約 6,150 円**（Phase 3.1b 時点 / 2026-05）
+**月額合計: 約 4,500 円**（2026-05-11 時点、J-Quants Free + EODHD のみ）
 
 > Phase 3.1b で EODHD は当初想定 All World $19.99 ではなく EOD+Intraday Extended $29.99 を採用。Fundamentals は別契約のため yfinance（無料）で補完する分業構成。深掘り時は EODHD ALL-IN-ONE $99.99（年払 $83.33）へのアップグレードを検討。
+>
+> **2026-05-11 訂正**: J-Quants は現状 **Free アカウント**（無料、2 年履歴 + 12 週遅延）。以前の記載「Light = 12 週遅延」は誤認。Light は当日 EOD + 5 年履歴対応で ¥1,650/月。アップグレード判断は `docs/cost-budget.md` の「J-Quants プラン比較・アップグレード判断基準」参照。
 
 ### MVP 7 機能（`docs/product-requirements.md` 参照）
 

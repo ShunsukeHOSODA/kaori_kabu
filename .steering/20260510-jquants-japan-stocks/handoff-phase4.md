@@ -4,6 +4,8 @@
 **前 handoff**: `.steering/20260510-jquants-japan-stocks/handoff.md` (Phase 1-3 完了、§4.1 A 案を「次回」として残置)
 **完了範囲**: Phase 4 (リスク指標 / ATR 日本株 J-Quants v2 経路拡張 + UI 警告強化)
 
+> **🚨 2026-05-11 §4.3 完了後の重要訂正**: 本ドキュメント内で「J-Quants Light の 12 週間遅延」と記載している箇所はすべて **誤認**。実機検証（scripts/verify_jquants_today.py）の結果、`.env` の `JQUANTS_API_KEY` は **Free アカウント**（2 年履歴 + 12 週遅延）であることが判明。Light（¥1,650/月）の正しい仕様は「5 年履歴 + 当日 EOD 対応」。Phase 4 の `to_date = today - 90d` ロジックは結果的に Free 仕様に適合しているため正しく動作中。詳細は `docs/cost-budget.md`「J-Quants プラン比較・アップグレード判断基準」参照。
+
 ---
 
 ## 1. 完了サマリー
@@ -173,9 +175,11 @@
 
 ## 5. 既知の課題
 
-### 5.1 J-Quants Light の 12 週間遅延（仕様、§4.3 Standard で解消可能）
+### 5.1 J-Quants Free アカウントの 12 週間遅延（仕様、Light upgrade で解消可能）
 
-リスク指標は影響軽微（統計性質変わらず）、ATR は本質的に「参考値」止まり。UI で警告強化済み。
+> **2026-05-11 訂正**: 元の見出し「J-Quants Light の 12 週間遅延」は誤認。実態は **Free アカウント (¥0)** の仕様。Light (¥1,650) は当日 EOD + 5 年履歴対応で 12 週遅延を解消可能。
+
+リスク指標は影響軽微（統計性質変わらず）、ATR は本質的に「参考値」止まり。UI で警告強化済み。Light/Standard へのアップグレード判断は `docs/cost-budget.md` 参照。
 
 ### 5.2 fullPage スクショが Streamlit のスクロール構造で取れない
 
