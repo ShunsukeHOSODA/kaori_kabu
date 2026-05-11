@@ -288,6 +288,77 @@ class JQuantsClient:
 
 
 # ============================================================
+# OHLC 変換ヘルパー（公開純粋関数）
+# ============================================================
+#
+# J-Quants v2 は OHLC を大文字 (Open/High/Low/Close) で返すが、
+# 既存の下流レイヤー（atr_stop.calculate_atr,
+# risk_metrics.compute_portfolio_returns）は EODHD 互換の小文字
+# (high/low/close) を期待する。本ヘルパー群はその差分を吸収する純粋関数。
+# 01_home.py のリスク指標経路 / ATR 経路の両方から呼ばれる。
+
+
+def extract_close_series(df: pd.DataFrame, *, ticker_name: str) -> pd.Series:
+    """J-Quants の OHLC DF から Close 系列を抽出（リスク指標経路用）。
+
+    Args:
+        df: ``Date`` (str ISO 8601) と ``Close`` (float) カラムを持つ DF。
+            ``get_eod`` の戻り値をそのまま渡せる。
+        ticker_name: 出力 Series の ``name`` 属性（risk_metrics の銘柄識別用）。
+
+    Returns:
+        ``pd.Series(close_float, index=DatetimeIndex, name=ticker_name, dtype=float)``。
+        空 DF の場合は空 Series を name 付きで返す。
+
+    Raises:
+        ValueError: ``Date`` か ``Close`` カラムが欠落している場合（フェイルファスト）。
+    """
+    if df.empty:
+        return pd.Series([], name=ticker_name, dtype=float)
+    if "Date" not in df.columns:
+        raise ValueError("DF に Date カラムが存在しません")
+    if "Close" not in df.columns:
+        raise ValueError("DF に Close カラムが存在しません")
+    return pd.Series(
+        df["Close"].astype(float).values,
+        index=pd.to_datetime(df["Date"]),
+        name=ticker_name,
+    )
+
+
+def extract_ohlc_lowercase(df: pd.DataFrame) -> pd.DataFrame:
+    """J-Quants の OHLC DF を小文字 ``high/low/close`` に揃える（ATR 経路用）。
+
+    既に小文字カラムが存在する場合は idempotent（EODHD DF をそのまま流せる）。
+    値は完全に保持、行数も不変。``atr_stop.calculate_atr`` が要求する
+    最低 3 カラム ``high``, ``low``, ``close`` のみ保証。
+
+    Args:
+        df: J-Quants の OHLC DF（大文字）または EODHD の OHLC DF（小文字）。
+
+    Returns:
+        ``high`` / ``low`` / ``close`` カラムを持つ DF（その他のカラムは保持）。
+
+    Raises:
+        ValueError: ``High/Low/Close`` のいずれかが両ケースで欠落の場合。
+    """
+    rename_map: dict[str, str] = {}
+    for upper, lower in (("High", "high"), ("Low", "low"), ("Close", "close")):
+        if upper in df.columns and lower not in df.columns:
+            rename_map[upper] = lower
+
+    result = df.rename(columns=rename_map) if rename_map else df.copy()
+
+    missing = [c for c in ("high", "low", "close") if c not in result.columns]
+    if missing:
+        raise ValueError(
+            f"OHLC DF に必須カラムが不足: {missing}"
+            " (High/Low/Close または high/low/close のいずれか必要)"
+        )
+    return result
+
+
+# ============================================================
 # ヘルパー
 # ============================================================
 

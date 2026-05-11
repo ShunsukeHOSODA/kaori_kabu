@@ -430,3 +430,133 @@ class TestGetEOD:
                 from_date=date(2025, 12, 1),
                 to_date=date(2025, 12, 1),
             )
+
+
+# ===========================================================================
+# OHLC 変換ヘルパー
+# ===========================================================================
+#
+# J-Quants v2 は OHLC を大文字 (Open/High/Low/Close) で返すが、
+# 既存の下流レイヤー（src/strategies/atr_stop.py の calculate_atr,
+# src/analysis/risk_metrics.py の compute_portfolio_returns）は EODHD 互換の
+# 小文字 (high/low/close) を期待する。本ヘルパー群はその差分を吸収する
+# 純粋関数で、リスク指標経路 / ATR 経路の両方で再利用される。
+
+
+@pytest.mark.unit
+class TestExtractCloseSeries:
+    """``extract_close_series`` — リスク指標経路用の Close 系列抽出。"""
+
+    def test_基本ケース_Date_Close_からSeries(self) -> None:
+        """``Date`` + ``Close`` を持つ DF → ``pd.Series(close, index=Datetime)``。"""
+        from data.jquants import extract_close_series
+
+        df = pd.DataFrame(
+            {
+                "Date": ["2025-12-01", "2025-12-02", "2025-12-03"],
+                "Close": [2913.0, 2950.0, 2920.0],
+            }
+        )
+        series = extract_close_series(df, ticker_name="7203")
+
+        assert isinstance(series, pd.Series)
+        assert series.name == "7203"
+        assert isinstance(series.index, pd.DatetimeIndex)
+        assert len(series) == 3
+        assert series.iloc[0] == pytest.approx(2913.0)
+        assert series.iloc[-1] == pytest.approx(2920.0)
+        # dtype は float（risk_metrics の pct_change が float を期待）
+        assert series.dtype == float
+
+    def test_空DF_空Series(self) -> None:
+        """空 DF → 空 Series（name のみ付与）。"""
+        from data.jquants import extract_close_series
+
+        df = pd.DataFrame(columns=["Date", "Close"])
+        series = extract_close_series(df, ticker_name="7203")
+
+        assert isinstance(series, pd.Series)
+        assert series.name == "7203"
+        assert len(series) == 0
+
+    def test_必須カラム欠落_ValueError(self) -> None:
+        """``Date`` か ``Close`` のいずれかが欠落 → ``ValueError``。
+
+        下流での silent NaN 伝播を防ぐためフェイルファスト。
+        """
+        from data.jquants import extract_close_series
+
+        df_no_close = pd.DataFrame({"Date": ["2025-12-01"], "Open": [2900.0]})
+        with pytest.raises(ValueError, match="Close|カラム"):
+            extract_close_series(df_no_close, ticker_name="7203")
+
+        df_no_date = pd.DataFrame({"Close": [2913.0]})
+        with pytest.raises(ValueError, match="Date|カラム"):
+            extract_close_series(df_no_date, ticker_name="7203")
+
+
+@pytest.mark.unit
+class TestExtractOhlcLowercase:
+    """``extract_ohlc_lowercase`` — ATR 経路用の OHLC 小文字化。"""
+
+    def test_基本ケース_HighLowClose_を小文字化(self) -> None:
+        """``High/Low/Close`` → ``high/low/close``。値は不変。"""
+        from data.jquants import extract_ohlc_lowercase
+
+        df = pd.DataFrame(
+            {
+                "Date": ["2025-12-01", "2025-12-02"],
+                "Open": [2900.0, 2913.0],
+                "High": [2950.0, 2960.0],
+                "Low": [2890.0, 2905.0],
+                "Close": [2913.0, 2950.0],
+                "Volume": [75_000_000, 60_000_000],
+            }
+        )
+        result = extract_ohlc_lowercase(df)
+
+        # ATR 関数が必要とする 3 カラムが小文字で揃う
+        assert "high" in result.columns
+        assert "low" in result.columns
+        assert "close" in result.columns
+        # 値は完全一致
+        assert result["high"].iloc[0] == pytest.approx(2950.0)
+        assert result["low"].iloc[0] == pytest.approx(2890.0)
+        assert result["close"].iloc[1] == pytest.approx(2950.0)
+        # 行数は不変
+        assert len(result) == 2
+
+    def test_必須カラム欠落_ValueError(self) -> None:
+        """``High/Low/Close`` のいずれかが欠落 → ``ValueError``（フェイルファスト）。"""
+        from data.jquants import extract_ohlc_lowercase
+
+        df = pd.DataFrame(
+            {
+                "Date": ["2025-12-01"],
+                "High": [2950.0],
+                "Low": [2890.0],
+                # Close が欠落
+            }
+        )
+        with pytest.raises(ValueError, match="Close|カラム"):
+            extract_ohlc_lowercase(df)
+
+    def test_既存の小文字カラムがあっても上書きしない(self) -> None:
+        """既に ``high/low/close`` が小文字で存在する DF はそのまま返す。
+
+        EODHD（小文字）の DF と J-Quants（大文字）の DF を同じ後続ロジックに
+        流せるようにする（idempotent）。
+        """
+        from data.jquants import extract_ohlc_lowercase
+
+        df = pd.DataFrame(
+            {
+                "high": [100.0, 105.0],
+                "low": [95.0, 98.0],
+                "close": [98.0, 103.0],
+            }
+        )
+        result = extract_ohlc_lowercase(df)
+        assert result["high"].iloc[0] == pytest.approx(100.0)
+        assert result["close"].iloc[1] == pytest.approx(103.0)
+        assert len(result) == 2
