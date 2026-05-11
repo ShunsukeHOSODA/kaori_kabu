@@ -1,0 +1,137 @@
+"""Claude Sonnet 4.6 Stage 2 ranking judge 実装。
+
+CLAUDE.md §9.3 一本線予測禁止を 3 層強制（system prompt + Pydantic + 正規表現）。
+Provenance §9.8.2 準拠の RankingMetadata を全結果に付与。
+
+学術根拠:
+    Greenblatt 2010 "The Little Book That Still Beats the Market"
+    Tetlock 2007 "Giving Content to Investor Sentiment"
+    Schroeder & Posch 2024 (スマートマネー追従分析)
+    Pabrai "The Dhandho Investor"
+    Thorp 2006 "The Kelly Criterion in Blackjack Sports Betting and the Stock Market"
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime, timezone  # noqa: F401 — timezone は将来 _build_metadata で使用
+from typing import Final
+
+# ---------------------------------------------------------------------------
+# 定数
+# ---------------------------------------------------------------------------
+
+DEFAULT_MODEL: Final[str] = "claude-sonnet-4-6"
+DEFAULT_MODEL_VERSION: Final[str] = "claude-sonnet-4-6-20250514"
+DEFAULT_MAX_TOKENS: Final[int] = 2048
+ACADEMIC_SOURCE: Final[str] = (
+    "Greenblatt 2010 + Tetlock 2007 + Schroeder & Posch 2024 + "
+    "Pabrai Dhandho + Thorp 2006"
+)
+
+# ---------------------------------------------------------------------------
+# 禁止パターン（一本線予測を 7 種の正規表現で検出）
+# CLAUDE.md §9.3 「一本線の価格予測は禁止」を正規表現で機械的に強制する。
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    # パターン 1: ドル建て価格（例: $200, $ 1,500）
+    re.compile(r"\$\s*\d+"),
+    # パターン 2: 円建て価格（例: ¥30,000, ¥ 1500）
+    re.compile(r"¥\s*\d+"),
+    # パターン 3: %＋上昇/下落系語句（例: 5% 上昇予測, 10% increase）
+    re.compile(r"\d+\s*%\s*(上昇|下落|上がる|下がる|increase|decrease)", re.IGNORECASE),
+    # パターン 4: 目標株価・価格目標（例: 目標株価, target price, price target）
+    re.compile(r"目標株価|target\s*price|price\s*target", re.IGNORECASE),
+    # パターン 5: 時期限定予測（例: いつまで, by 6 months）
+    re.compile(r"いつまで|by\s+\d+\s*(month|year|月|年)", re.IGNORECASE),
+    # パターン 6: 予想・予測価格（例: forecast price, expected price）
+    re.compile(r"forecast\s+price|expected\s+price", re.IGNORECASE),
+    # パターン 7: ○ヶ月/months 以内（例: 3 ヶ月以内, 6 months 以内）
+    re.compile(r"(\d+\s*ヶ月|\d+\s*months?)\s*以内", re.IGNORECASE),
+)
+
+
+# ---------------------------------------------------------------------------
+# 禁止パターン検出関数
+# ---------------------------------------------------------------------------
+
+
+def contains_forbidden_pattern(text: str) -> bool:
+    """テキストに一本線予測パターンが含まれていれば True を返す。
+
+    CLAUDE.md §9.3 の禁止規約を機械的に検査する。
+    FORBIDDEN_PATTERNS のいずれか 1 つでも一致した場合は True。
+
+    Args:
+        text: 検査対象の文字列（Sonnet の出力や要約テキスト等）
+
+    Returns:
+        禁止パターンを 1 つ以上含む場合 True、含まない場合 False
+    """
+    return any(p.search(text) for p in FORBIDDEN_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Provenance ヘルパー
+# ---------------------------------------------------------------------------
+
+
+def _get_current_git_commit() -> str | None:
+    """現在の git commit short hash を返す。失敗時は None。
+
+    sentiment.py の同名関数と同等実装（notes-5.2.md §2.1 参照）。
+    Phase 6 で src/analysis/_common.py に統合予定。
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603, S607 — 固定引数のみ
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or None
+
+
+# ---------------------------------------------------------------------------
+# データクラス
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RankingMetadata:
+    """Sonnet 判定結果の出所情報（CLAUDE.md §9.8.2 必須）。
+
+    Attributes:
+        model: 使用モデル名（例: "claude-sonnet-4-6"）
+        model_version: 使用モデルバージョン（例: "claude-sonnet-4-6-20250514"）
+        calculation_method: 計算手法識別子（例: "ranking_judge_v1"）
+        input_bundle_hash: 入力シグナル束の SHA256 ハッシュ
+        cache_hit: Prompt Caching ヒット有無
+        cache_age_sec: キャッシュヒット時の経過秒数（ミスの場合 None）
+        input_tokens: 非キャッシュ入力トークン数
+        output_tokens: 出力トークン数
+        input_tokens_cached: キャッシュヒット分のトークン数
+        calculated_at: 計算実行日時（UTC）
+        academic_source: 学術根拠の文献情報
+        code_commit: 計算時の git commit short hash（取得失敗時 None）
+    """
+
+    model: str
+    model_version: str
+    calculation_method: str
+    input_bundle_hash: str
+    cache_hit: bool
+    cache_age_sec: int | None
+    input_tokens: int
+    output_tokens: int
+    input_tokens_cached: int
+    calculated_at: datetime
+    academic_source: str
+    code_commit: str | None = None
