@@ -1,8 +1,11 @@
-# 引き継ぎ doc — 20260510-jquants-japan-stocks Phase 4 完了 → 次回 §4.2 #2 (HMM VIX 代替) or §4.3 #3 (Half-Kelly DLog)
+# 引き継ぎ doc — 20260510-jquants-japan-stocks Phase 4 完全完了 (4/5 = 80%)
 
-**最終更新**: 2026-05-11（リスク指標 / ATR の日本株拡張 完了 = MVP β 100% 達成）
-**前 handoff**: `.steering/20260510-jquants-japan-stocks/handoff.md` (Phase 1-3 完了、§4.1 A 案を「次回」として残置)
-**完了範囲**: Phase 4 (リスク指標 / ATR 日本株 J-Quants v2 経路拡張 + UI 警告強化)
+**最終更新**: 2026-05-11 後半セッション（§4.1 #2 / §4.2 #3 / §4.3 / §4.5 完了、§4.4 skip）
+**前 handoff**: `.steering/20260510-jquants-japan-stocks/handoff.md` (Phase 1-3 完了)
+**完了範囲**: Phase 4 全体（リスク指標 / ATR JP 拡張 + HMM VIX 代替 + Half-Kelly Decision Log + J-Quants プラン整理 + JP ユニバース動的化）
+**スコープ外（次セッション以降）**: §4.4 TOPIX ベンチマーク（JP 銘柄保有開始時に Light upgrade と一緒に実装）
+
+**▶ Session 2 (2026-05-11 後半) 成果は §11 を参照**
 
 > **🚨 2026-05-11 §4.3 完了後の重要訂正**: 本ドキュメント内で「J-Quants Light の 12 週間遅延」と記載している箇所はすべて **誤認**。実機検証（scripts/verify_jquants_today.py）の結果、`.env` の `JQUANTS_API_KEY` は **Free アカウント**（2 年履歴 + 12 週遅延）であることが判明。Light（¥1,650/月）の正しい仕様は「5 年履歴 + 当日 EOD 対応」。Phase 4 の `to_date = today - 90d` ロジックは結果的に Free 仕様に適合しているため正しく動作中。詳細は `docs/cost-budget.md`「J-Quants プラン比較・アップグレード判断基準」参照。
 
@@ -339,4 +342,172 @@ CLAUDE.md §5「個人利用限定」前提で許容。日本株ファンダの 
 
 ---
 
-**handoff-phase4.md 終わり**
+**handoff-phase4.md Session 1 (前半) 終わり**
+
+---
+
+## 11. Session 2 追加成果（2026-05-11 後半）
+
+Session 1 が「リスク指標 / ATR JP 拡張」完了後の次回タスク候補 §4.1〜§4.5 を残置した状態で終了。
+Session 2 で §4.1 #2 / §4.2 #3 / §4.3 / §4.5 を一気に完了させ、§4.4 のみ JP 保有開始時へ skip。
+
+### 11.1 完了タスク一覧（Session 2、8 コミット）
+
+| # | コミット | タスク | 内容 |
+|---|---|---|---|
+| 1 | `f634d90` | §4.1 #2 | feat(regime): HMM VIX 代替パス + TDD |
+| 2 | `c553a28` | §4.2 #3 | feat(decision-log): Half-Kelly Decision Log 統合 + TDD（B 案: スキーマ + 表示のみ） |
+| 3 | `9161043` | §4.3 | docs(cost-budget): J-Quants プラン比較セクション追加 |
+| 4 | `f8cae03` | §4.3 | fix(docs): Light 12 週遅延訂正（実機検証で発見） |
+| 5 | `0b5e06a` | §4.3 | fix(docs): **実は Free アカウントだった**の真の事実訂正 |
+| 6 | `30eec00` | §4.3 | docs(cost-budget): 案 B 採用確定（Free 維持、JP 銘柄購入時に Light upgrade） |
+| 7 | `73d9630` | §4.5 | feat(screener): JP ユニバース動的取得（FinanceDatabase 経由）+ TDD |
+| 8 | — | §4.4 | ⏸️ skip（JP 銘柄保有開始時に実装、Light upgrade と一緒に進める方が ROI 高い） |
+
+**全 unit test 推移**: 352 → 360 → 365 → 371（+19、回帰なし）
+
+### 11.2 §4.1 #2 — HMM VIX 代替パス
+
+**目的**: VIX (EODHD INDX) 取得失敗時に Crisis 判定が `None` で停止する問題を解消。
+
+**実装**:
+- `src/analysis/regime.py`:
+  - `compute_realized_volatility(prices, window=30)` 追加（SPY log returns × rolling 30 std × √252 × 100、VIX と同 % スケール）
+  - `RegimeMetadata.vix_source: str | None` フィールド追加（後方互換）
+  - `detect_regime_with_provenance(..., vix_source)` パラメータ追加
+- `src/dashboard/views/01_home.py:_detect_market_regime_cached`:
+  - SPY 取得は必須、VIX 取得は best-effort に分離
+  - VIX 失敗時のみ realized vol で代理、`vix_source="realized_vol_proxy_v1"`
+- `src/dashboard/widgets/regime_signal.py`:
+  - `vix_source == "realized_vol_proxy_v1"` 時に `st.warning` 追加表示
+
+**TDD**: 8 件（compute_realized_volatility 3 + provenance 2 + UI warning 3）
+
+### 11.3 §4.2 #3 — Half-Kelly Decision Log 統合（B 案）
+
+**目的**: 「なぜこの数量を買ったか」を Kelly 計算過程込みで Provenance §9.8.3 化。
+
+**B 案採用理由**: 02_screener に BUY ボタン経路がまだ存在しないため、フル実装は次セッション以降。スキーマ + 表示のみ先行。
+
+**実装**:
+- `src/strategies/kelly.py`:
+  - `build_kelly_recommendation(params, portfolio_value_jpy)` 追加（11 フィールド全文字列 dict、JSON シリアライズ可）
+- `src/portfolio/decision_log.py`:
+  - `append_decision(..., kelly_recommendation: dict | None = None)` 後方互換 kwarg 追加
+  - JSONL レコードに `kelly_recommendation` フィールド追加
+- `src/dashboard/views/02_screener.py`:
+  - サイドバー「📐 Half-Kelly 推奨」セクション追加（評価額 number_input、既定 ¥1,000,000）
+  - Composite Score テーブルに「Kelly推奨JPY」列を併記
+  - 暫定値: 勝率 60%（Greenblatt 経験則）/ 損益比 2.0（ATR 2R）/ 上限 5%（Thorp 2006）
+
+**TDD**: 5 件（append_decision Kelly 2 + build_kelly_recommendation 3）
+
+**残課題**: BUY ボタン経路新規実装（次セッション以降、Light upgrade と組み合わせて運用品質を上げてから）
+
+### 11.4 §4.3 — J-Quants プラン整理（4 コミットの大連鎖）
+
+**最大の発見**: ドキュメント仕様と実機挙動の食い違いから、**現在使用中の API キーは Free アカウント**が判明（ユーザー確認済）。
+
+**コミット推移**:
+1. `9161043` プラン比較セクション初版（公式ページ調査）
+2. `f8cae03` 実機検証で「Light 以上は当日対応」記述を訂正…と思いきや
+3. `0b5e06a` 真の原因判明: `.env` は Free アカウント。Light の挙動と勘違いしていただけ
+4. `30eec00` 案 B（Free 維持、JP 購入時に Light upgrade）採用確定
+
+**正しいプラン比較（2026-05-11 確定）**:
+
+| プラン | 月額 | API | 履歴 | 遅延 |
+|---|---|---|---|---|
+| Free | ¥0 | 5/min | 2 年 | **12 週遅延** |
+| Light | ¥1,650 | 60/min | 5 年 | **当日 EOD 対応** |
+| Standard | ¥3,300 | 120/min | 10 年 | 当日 + 信用取引 |
+| Premium | ¥16,500 | 500/min | 20 年 | 当日 + 分足 + 財務諸表 |
+
+**修正ファイル**: `CLAUDE.md` §5 / `docs/cost-budget.md` / `.steering/.../handoff-phase4.md` §5.1
+
+**新規ファイル**: `scripts/verify_jquants_today.py`（次回再検証用）
+
+**memory 保存**: `~/.claude/projects/-Users-kaori-Desktop-kaori-kabu/memory/jquants_account.md` に「JP 銘柄購入時に Light upgrade 提案する運用ルール」を記録 → 次セッションで自動参照される
+
+### 11.5 §4.5 — JP ユニバース動的取得（B 案: FinanceDatabase 経由）
+
+**目的**: 02_screener の JP モード時のハードコード Core30 10 銘柄から、~96/350 銘柄スケールへ動的化。
+
+**実装**:
+- `src/data/financedatabase_client.py` 新規:
+  - `get_jp_universe(cap_filter, limit, equities_factory)`: TSE 銘柄リスト動的取得
+  - cap_filter: "large" (Mega+Large ~96) / "mid" (+Mid ~350) / "all" (~2950)
+  - 依存性注入で test 容易化
+- `src/dashboard/views/02_screener.py`:
+  - サイドバーに「JP ユニバース」selectbox（3 段階切替）
+  - 7d Streamlit キャッシュ
+  - 取得失敗時はプリセットに graceful degradation
+
+**TDD**: 6 件（cap_filter 別 3 + limit / ticker 正規化 / ValueError）
+
+**実機確認**: large=96 / mid=352 / all=2,951 銘柄取得 OK
+
+### 11.6 §4.4 skip の判断記録
+
+**理由**: TOPIX ベンチマークは「JP 比率 50% 超」を発動条件とするが、現在 JP 保有 0 銘柄のため、実装しても動作確認できない。JP 銘柄購入時に Light upgrade と一緒に実装する方が ROI 高い（実データで検証できる）。
+
+**次回トリガー**: ユーザーが「日本株を買った」と発言 → Light upgrade 提案 → §4.4 TOPIX ベンチマーク実装
+
+### 11.7 学び
+
+- **公式ページの表現には注意**: J-Quants「Light は当日対応」は技術的には正しいが、Free との比較表で読むと紛らわしい。**実機検証を一次情報として優先する規律**を確立できた
+- **誤認の連鎖を実機検証で破った**: 元の CLAUDE.md「Light = 12 週遅延」誤記 → 公式ページ調査で更に誤認 → 実機検証で「実は Free」と判明、3 段階の誤解を辿った
+- **memory への保存**: 「JP 銘柄保有時に Light upgrade」運用ルールを永続化し、次セッション以降の AI が自動的に提案できるように
+- **B 案（最小スコープ）が機能した**: §4.2 / §4.5 で「フル実装より段階的着手」を選択 → 動作確認しやすい範囲で前進
+
+### 11.8 次セッション開始用プロンプト
+
+#### 案 1. §4.4 TOPIX ベンチマーク（JP 銘柄保有開始後）
+
+```
+日本株を 1 銘柄買ったので、J-Quants Light upgrade + §4.4 TOPIX ベンチマークを実装したい。
+
+事前読み込み:
+- .steering/20260510-jquants-japan-stocks/handoff-phase4.md §11.5
+- docs/cost-budget.md「J-Quants プラン比較」
+- ~/.claude/projects/-Users-kaori-Desktop-kaori-kabu/memory/jquants_account.md
+- src/analysis/risk_metrics.py::compute_benchmark_comparison
+
+実装方針:
+- まず Light 契約 → API キー再発行 → .env 更新
+- scripts/verify_jquants_today.py で当日 EOD 取得確認
+- 01_home.py の to_date = today - 90d ロジック撤回
+- UI 警告（「参考値」「~90 日前時点シミュレーション」）削除
+- §4.4 compute_benchmark_comparison に benchmark_currency 追加
+- TOPIX 連動 ETF 1306 取得 + JP 比率 50% 超で 50:50 加重平均
+- TDD 通貨混合テスト 2-3 件
+```
+
+#### 案 2. 02_screener BUY ボタン経路新規実装
+
+```
+.steering/20260510-jquants-japan-stocks/handoff-phase4.md §11.3 の残課題、
+02_screener に BUY ボタン経路を実装して Decision Log に Kelly 込みで保存。
+
+事前読み込み:
+- .steering/.../handoff-phase4.md §11.3
+- src/portfolio/decision_log.py append_decision
+- src/strategies/kelly.py build_kelly_recommendation
+- src/dashboard/views/02_screener.py Composite Score テーブル
+
+実装方針:
+- Composite Score テーブルの各行に「BUY」ボタン追加
+- クリック → 数量入力 → confirmation → append_decision に kelly_recommendation + trigger + rationale を渡す
+- Playwright で動作確認 + JSONL 検証
+```
+
+#### 案 3. Phase 5 着手（PRD 整理 + 次の方向性）
+
+```
+Phase 4 完了。Phase 5 の方向性を決めたい。docs/product-requirements.md を読んで、
+次に進めるべきタスクを 3 案提示してほしい。
+```
+
+---
+
+**handoff-phase4.md Session 2 (後半) 終わり**
