@@ -184,3 +184,48 @@ class TestRankingResult:
                 "forecast_price",
             }
         ) == FORBIDDEN_PREDICTION_FIELDS
+
+    @pytest.mark.unit
+    def test_supporting_signals_空タプルを_reject(self) -> None:
+        from pydantic import ValidationError
+
+        from src.analysis.ranking_judge import RankingResult
+
+        payload = _valid_payload()
+        payload["supporting_signals"] = ()
+        with pytest.raises(ValidationError):
+            RankingResult.model_validate(payload)
+
+    @pytest.mark.unit
+    def test_risk_signals_空タプルを_reject(self) -> None:
+        from pydantic import ValidationError
+
+        from src.analysis.ranking_judge import RankingResult
+
+        payload = _valid_payload()
+        payload["risk_signals"] = ()
+        with pytest.raises(ValidationError):
+            RankingResult.model_validate(payload)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("empty_key", ["short_term", "long_term", "dividend"])
+    def test_lens_views_値が空文字列を_reject(self, empty_key: str) -> None:
+        from pydantic import ValidationError
+
+        from src.analysis.ranking_judge import RankingResult
+
+        payload = _valid_payload()
+        payload["lens_views"] = {**payload["lens_views"], empty_key: ""}
+        with pytest.raises(ValidationError, match="空文字列"):
+            RankingResult.model_validate(payload)
+
+    @pytest.mark.unit
+    def test_lens_views_値が空白のみを_reject(self) -> None:
+        from pydantic import ValidationError
+
+        from src.analysis.ranking_judge import RankingResult
+
+        payload = _valid_payload()
+        payload["lens_views"] = {**payload["lens_views"], "short_term": "   "}
+        with pytest.raises(ValidationError, match="空文字列"):
+            RankingResult.model_validate(payload)

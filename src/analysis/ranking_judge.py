@@ -199,8 +199,8 @@ class RankingResult(BaseModel):
 
     ranking_score: int = Field(ge=0, le=100)
     recommendation_summary: str = Field(max_length=150)
-    supporting_signals: tuple[str, ...] = Field(max_length=5)
-    risk_signals: tuple[str, ...] = Field(max_length=5)
+    supporting_signals: tuple[str, ...] = Field(min_length=1, max_length=5)
+    risk_signals: tuple[str, ...] = Field(min_length=1, max_length=5)
     counter_view: str = Field(max_length=200)
     lens_views: dict[str, str]
     confidence: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
@@ -228,12 +228,21 @@ class RankingResult(BaseModel):
 
     @model_validator(mode="after")
     def _validate_lens_views_keys(self) -> RankingResult:
-        """lens_views が必須 3 キー（short_term / long_term / dividend）か検証。"""
+        """lens_views が必須 3 キー固定かつ値が空文字列でないか検証。
+
+        Sonnet が空文字列を返した場合に UI で「シグナルなし」が silent pass する
+        運用リスクを避けるため、`str.strip()` で空白のみのケースも reject する。
+        """
         required = {"short_term", "long_term", "dividend"}
         actual = set(self.lens_views.keys())
         if actual != required:
             raise ValueError(
                 "lens_views は 3 キー固定 (short_term/long_term/dividend) "
                 f"が必須、実際: {sorted(actual)}"
+            )
+        empty_keys = [k for k, v in self.lens_views.items() if not v.strip()]
+        if empty_keys:
+            raise ValueError(
+                f"lens_views の値が空文字列: {sorted(empty_keys)}"
             )
         return self
