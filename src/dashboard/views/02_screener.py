@@ -38,7 +38,7 @@ from src.analysis.composite import (
     ValueSubScoreInputs,
     compute_composite_score,
 )
-from src.analysis.investor_lenses import INVESTOR_LENSES, apply_lenses
+from src.analysis.investor_lenses import apply_lenses
 from src.analysis.magic_formula import (
     MagicFormulaResult,
     screen_magic_formula_with_provenance,
@@ -54,6 +54,11 @@ from src.data.famous_holdings import get_famous_owners, render_owner_badges
 from src.data.financedatabase_client import get_jp_universe
 from src.data.news import MarketContext, NewsClient
 from src.data.yfinance import YFinanceClient, make_default_yfinance_client
+from src.portfolio.buy_decision import (
+    BuyOrderRequest,
+    ScreenerTrigger,
+    submit_buy_order,
+)
 from src.strategies.kelly import KellyParams, build_kelly_recommendation
 from src.ui.components import (
     composite_radar_chart,
@@ -1090,6 +1095,7 @@ if run_button:
             composite_rows.append(
                 {
                     "ティッカー": _ticker_with_badge,
+                    "_ticker_raw": ticker_name,  # BUY フォーム用、表示時は drop
                     "Composite": f"{composite.composite_score:.1f}",
                     "Q": f"{composite.sub_scores['Q']:.0f}",
                     "V": f"{composite.sub_scores['V']:.0f}",
@@ -1112,11 +1118,23 @@ if run_button:
 
         progress.empty()
 
+        # ───────────────────────────────────────────────
+        # session_state に保存（form submit 時の rerun でも BUY フォームを動かすため）
+        # ───────────────────────────────────────────────
+        st.session_state["screening_session"] = {
+            "composite_rows": composite_rows,
+            "composite_preset": composite_preset,
+            "kelly_params_default": _kelly_params_default,
+            "portfolio_value_jpy_dec": _portfolio_value_jpy_dec,
+            "calculated_at_iso": result.metadata.calculated_at.isoformat(),
+            "code_commit": result.metadata.code_commit,
+        }
+
         if composite_rows:
             st.dataframe(
-                pd.DataFrame(composite_rows).sort_values(
-                    "Composite", ascending=False
-                ),
+                pd.DataFrame(composite_rows)
+                .drop(columns=["_ticker_raw"])
+                .sort_values("Composite", ascending=False),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -1182,7 +1200,142 @@ if run_button:
         )
     st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
 
-else:
+# ───────────────────────────────────────────────
+# 🛒 BUY フォーム（session_state 経由、form submit 後の rerun でも動作）
+# §4.2 #3、handoff-phase4.md §11.3
+# ───────────────────────────────────────────────
+if "screening_session" in st.session_state:
+    _ls = st.session_state["screening_session"]
+    composite_rows = _ls["composite_rows"]
+    composite_preset = _ls["composite_preset"]
+    _kelly_params_default = _ls["kelly_params_default"]
+    _portfolio_value_jpy_dec = _ls["portfolio_value_jpy_dec"]
+    _calculated_at_iso = _ls["calculated_at_iso"]
+    _code_commit = _ls["code_commit"]
+
+    # 直近 BUY 結果（前回の rerun 経由でセットされたメッセージを表示）
+    if "last_buy_result" in st.session_state:
+        st.success(st.session_state["last_buy_result"]["message"])
+
+    st.markdown("---")
+    st.subheader("🛒 BUY 記録 — Decision Log に追記")
+    st.caption(
+        "Composite Score テーブルから 1 銘柄選んで Decision Log (JSONL) に記録。"
+        "Kelly 推奨を初期値、上書き可。注文額が Kelly 上限を超えると警告（§9.7）。"
+    )
+
+    _ticker_to_row = {row["_ticker_raw"]: row for row in composite_rows}
+
+    with st.form(key="buy_order_form"):
+        form_cols = st.columns([2, 1, 1, 3])
+        with form_cols[0]:
+            buy_ticker = st.selectbox(
+                "銘柄",
+                options=list(_ticker_to_row.keys()),
+                help="Composite Score テーブルから選択（バッジ除去後の raw ticker）",
+            )
+
+        _selected_row = _ticker_to_row[buy_ticker]
+        _kelly_size_jpy = int(
+            _selected_row["Kelly推奨JPY"]
+            .replace("¥", "")
+            .replace(",", "")
+        )
+
+        with form_cols[1]:
+            buy_price_jpy = st.number_input(
+                "株価 (JPY)",
+                min_value=1,
+                value=25_000,
+                step=100,
+                help="現在の取引価格を JPY で入力",
+            )
+
+        # Kelly 推奨額 ÷ 株価 を初期株数の暫定値（最低 1 株）
+        _default_shares = max(
+            1, _kelly_size_jpy // max(int(buy_price_jpy), 1)
+        )
+
+        with form_cols[2]:
+            buy_shares = st.number_input(
+                "株数",
+                min_value=1,
+                value=_default_shares,
+                step=1,
+                help=(
+                    f"Kelly 推奨額 ¥{_kelly_size_jpy:,} ÷ 株価 から"
+                    "自動算出。上書き可（超過時は警告表示）"
+                ),
+            )
+
+        with form_cols[3]:
+            buy_rationale = st.text_input(
+                "追加根拠（任意）",
+                placeholder="例: 長期保有候補、決算良好",
+                help="Composite Score + プリセットは自動付与、その他根拠を記入",
+            )
+
+        submit_buy = st.form_submit_button(
+            "✅ BUY 確定（Decision Log に追記）",
+            type="primary",
+        )
+
+    if submit_buy:
+        _order_amount = int(buy_shares) * int(buy_price_jpy)
+        _exceeds_kelly = _order_amount > _kelly_size_jpy
+
+        # Overconfidence バイアス対策警告（CLAUDE.md §9.7）
+        if _exceeds_kelly:
+            st.warning(
+                f"⚠️ 注文額 ¥{_order_amount:,} が Kelly 上限 "
+                f"¥{_kelly_size_jpy:,} を超過（+¥{_order_amount - _kelly_size_jpy:,}）。"
+                "それでも記録します（Overconfidence バイアス監視、§9.7）。"
+            )
+
+        _sub_scores_dec = {
+            k: Decimal(_selected_row[k])
+            for k in ("Q", "V", "I", "G", "R", "M", "S")
+            if k in _selected_row
+        }
+
+        _buy_request = BuyOrderRequest(
+            ticker=buy_ticker,
+            shares=Decimal(str(int(buy_shares))),
+            price_jpy=Decimal(str(int(buy_price_jpy))),
+            trigger=ScreenerTrigger(
+                skill="composite-score-screener",
+                preset=composite_preset,
+                composite_score=Decimal(_selected_row["Composite"]),
+                sub_scores=_sub_scores_dec,
+                screener_run_at=_calculated_at_iso,
+            ),
+            kelly_params=_kelly_params_default,
+            portfolio_value_jpy=_portfolio_value_jpy_dec,
+            additional_rationale=buy_rationale or "",
+            code_commit=_code_commit,
+        )
+
+        _log_path = submit_buy_order(
+            _buy_request, log_dir=settings.decision_log_dir
+        )
+        _kelly_status = (
+            "✅ 範囲内" if not _exceeds_kelly else "⚠️ 上限超過"
+        )
+        _success_msg = (
+            f"✅ **BUY 記録完了**\n\n"
+            f"- 銘柄: `{buy_ticker}` × {int(buy_shares)} 株 "
+            f"× ¥{int(buy_price_jpy):,} = **¥{_order_amount:,}**\n"
+            f"- Composite: {_selected_row['Composite']}/100 "
+            f"（{composite_preset}）\n"
+            f"- Kelly 推奨: ¥{_kelly_size_jpy:,} / 実発注: "
+            f"¥{_order_amount:,} （{_kelly_status}）\n"
+            f"- 📁 JSONL: `{_log_path}`"
+        )
+        st.success(_success_msg)
+        # 次回 rerun でも表示できるよう session_state に保存
+        st.session_state["last_buy_result"] = {"message": _success_msg}
+
+elif not run_button:
     st.info("左サイドバーでパラメータを設定し「スクリーニング実行」を押してください。")
 
 

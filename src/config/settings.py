@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # ===== Magic Formula パラメータ =====
     mf_min_market_cap_usd: int = Field(default=100_000_000, alias="MF_MIN_MARKET_CAP_USD")
     mf_exclude_sectors: str = Field(default="Financials,Utilities,Energy", alias="MF_EXCLUDE_SECTORS")
-    mf_top_n: int = Field(default=30, alias="MF_TOP_N")
+    mf_top_n: int = Field(default=5, alias="MF_TOP_N")
     mf_rebalance_quarters: int = Field(default=4, alias="MF_REBALANCE_QUARTERS")
 
     # ===== Half-Kelly パラメータ =====
