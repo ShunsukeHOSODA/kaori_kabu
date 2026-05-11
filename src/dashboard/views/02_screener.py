@@ -51,6 +51,7 @@ from src.config.settings import settings
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDAPIError, EODHDClient
 from src.data.famous_holdings import get_famous_owners, render_owner_badges
+from src.data.financedatabase_client import get_jp_universe
 from src.data.news import MarketContext, NewsClient
 from src.data.yfinance import YFinanceClient, make_default_yfinance_client
 from src.strategies.kelly import KellyParams, build_kelly_recommendation
@@ -87,6 +88,15 @@ st.markdown(
 # ---------------------------------------------------------------------------
 # データソース層
 # ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=604800, show_spinner="🇯🇵 TSE 銘柄リスト取得中...")
+def _get_jp_universe_cached(cap_filter: str, limit: int) -> list[str]:
+    """FinanceDatabase から JP ユニバース取得（7d キャッシュ、§4.5）。
+
+    Streamlit `@st.cache_data` 経由で同セッション内の重複取得を抑止。
+    """
+    return get_jp_universe(cap_filter=cap_filter, limit=limit)  # type: ignore[arg-type]
 
 
 @st.cache_data
@@ -639,20 +649,60 @@ with st.sidebar:
         "7203, 6758, 9984, 6861, 6098, 8035, 4063, 6981, 7974, 8001"
     )
 
-    if real_mode:
-        _default = (
-            _DEFAULT_TICKERS_JP if exchange == "TO" else _DEFAULT_TICKERS_US
+    # JP ユニバース 動的選択（§4.5、handoff-phase4.md）— TO モード時のみ
+    _JP_UNIVERSE_LABELS: dict[str, tuple[str, int] | None] = {
+        "プリセット 10 銘柄（Core30 抜粋）": None,
+        "Large+ Cap（TOPIX 100 近似、~96 銘柄）": ("large", 100),
+        "Mid+ Cap（TOPIX 500 近似、~350 銘柄）": ("mid", 300),
+    }
+    _jp_universe_label: str = "プリセット 10 銘柄（Core30 抜粋）"
+    if real_mode and exchange == "TO":
+        _jp_universe_label = st.selectbox(
+            "JP ユニバース",
+            options=list(_JP_UNIVERSE_LABELS.keys()),
+            index=0,
+            help=(
+                "FinanceDatabase (無料) から TSE 銘柄を時価総額カテゴリ別に動的取得。"
+                "TOPIX 公式分類とは厳密に対応しないが、米国基準 Mega/Large/Mid Cap を"
+                "用いて近似。キャッシュ 7d で API 呼び出しを抑制。"
+            ),
         )
+
+    if real_mode:
+        if exchange == "TO":
+            _jp_filter_spec = _JP_UNIVERSE_LABELS[_jp_universe_label]
+            if _jp_filter_spec is None:
+                _default = _DEFAULT_TICKERS_JP
+            else:
+                _cap_filter, _limit = _jp_filter_spec
+                try:
+                    _jp_tickers = _get_jp_universe_cached(_cap_filter, _limit)
+                    _default = ", ".join(_jp_tickers) if _jp_tickers else _DEFAULT_TICKERS_JP
+                except Exception as exc:  # noqa: BLE001 — UI fallback
+                    st.warning(
+                        f"⚠️ FinanceDatabase 取得失敗 ({type(exc).__name__})。"
+                        "プリセットにフォールバック"
+                    )
+                    _default = _DEFAULT_TICKERS_JP
+        else:
+            _default = _DEFAULT_TICKERS_US
+
         if exchange == "TO":
             st.caption(
                 "🇯🇵 東証選択中: 4 桁証券コードで入力（例: 7203 = トヨタ）。"
                 "yfinance が `.T` 付きで取得します。"
             )
+        # JP universe selectbox 切替時に textarea を再描画させる key
+        _ticker_key = (
+            f"ticker_input_{exchange}_{_jp_universe_label}"
+            if exchange == "TO"
+            else f"ticker_input_{exchange}"
+        )
         ticker_text = st.text_area(
             "ティッカー（カンマまたは改行区切り）",
             value=_default,
             height=120,
-            key=f"ticker_input_{exchange}",  # 取引所切替時の再描画
+            key=_ticker_key,
         )
         tickers = parse_tickers(ticker_text)
         st.caption(f"対象 {len(tickers)} 銘柄")
