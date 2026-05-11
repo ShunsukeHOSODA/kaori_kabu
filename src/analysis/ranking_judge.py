@@ -179,7 +179,7 @@ class RankingResult(BaseModel):
         risk_signals: リスクシグナル（最大 5 件のタプル）
         counter_view: 反対意見・カウンタービュー（最大 200 文字）
         lens_views: 3 レンズ視点
-            （キーは ``short_term`` / ``long_term`` / ``dividend`` 固定）
+            （キーは ``Buffett_Munger`` / ``Burry`` / ``Lynch`` 固定）
         confidence: 確信度（0.0-1.0 の Decimal）
         confidence_adjusted: HMM レジーム調整後の確信度（0.0-1.0）
         kelly_multiplier: Half-Kelly 乗数（0.0-1.0、Thorp 2006 準拠）
@@ -233,11 +233,11 @@ class RankingResult(BaseModel):
         Sonnet が空文字列を返した場合に UI で「シグナルなし」が silent pass する
         運用リスクを避けるため、`str.strip()` で空白のみのケースも reject する。
         """
-        required = {"short_term", "long_term", "dividend"}
+        required = {"Buffett_Munger", "Burry", "Lynch"}
         actual = set(self.lens_views.keys())
         if actual != required:
             raise ValueError(
-                "lens_views は 3 キー固定 (short_term/long_term/dividend) "
+                "lens_views は 3 キー固定 (Buffett_Munger/Burry/Lynch) "
                 f"が必須、実際: {sorted(actual)}"
             )
         empty_keys = [k for k, v in self.lens_views.items() if not v.strip()]

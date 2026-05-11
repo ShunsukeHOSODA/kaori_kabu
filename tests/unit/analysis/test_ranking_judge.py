@@ -42,9 +42,9 @@ def _valid_payload() -> dict[str, Any]:
         "risk_signals": ("Value Trap 懸念",),
         "counter_view": "直近 PER 低下は一時的",
         "lens_views": {
-            "short_term": "RSI 中立",
-            "long_term": "ROC 28%",
-            "dividend": "DY 2.5%",
+            "Buffett_Munger": "質×価値の典型",
+            "Burry": "クレジット観で警戒",
+            "Lynch": "消費者目線で堅実",
         },
         "confidence": Decimal("0.7"),
         "confidence_adjusted": Decimal("0.6"),
@@ -104,9 +104,9 @@ class TestRankingResult:
         result = RankingResult.model_validate(_valid_payload())
         assert result.ranking_score == 80
         assert result.lens_views == {
-            "short_term": "RSI 中立",
-            "long_term": "ROC 28%",
-            "dividend": "DY 2.5%",
+            "Buffett_Munger": "質×価値の典型",
+            "Burry": "クレジット観で警戒",
+            "Lynch": "消費者目線で堅実",
         }
         assert result.confidence == Decimal("0.7")
         # frozen=True なので set 不可
@@ -154,9 +154,9 @@ class TestRankingResult:
 
         payload = _valid_payload()
         payload["lens_views"] = {
-            "short_term": "RSI 中立",
-            "long_term": "ROC 28%",
-        }  # dividend 欠落
+            "Buffett_Munger": "質×価値の典型",
+            "Burry": "クレジット観で警戒",
+        }  # Lynch 欠落
         with pytest.raises(ValidationError, match="3 キー固定"):
             RankingResult.model_validate(payload)
 
@@ -208,7 +208,7 @@ class TestRankingResult:
             RankingResult.model_validate(payload)
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("empty_key", ["short_term", "long_term", "dividend"])
+    @pytest.mark.parametrize("empty_key", ["Buffett_Munger", "Burry", "Lynch"])
     def test_lens_views_値が空文字列を_reject(self, empty_key: str) -> None:
         from pydantic import ValidationError
 
@@ -226,7 +226,7 @@ class TestRankingResult:
         from src.analysis.ranking_judge import RankingResult
 
         payload = _valid_payload()
-        payload["lens_views"] = {**payload["lens_views"], "short_term": "   "}
+        payload["lens_views"] = {**payload["lens_views"], "Buffett_Munger": "   "}
         with pytest.raises(ValidationError, match="空文字列"):
             RankingResult.model_validate(payload)
 
