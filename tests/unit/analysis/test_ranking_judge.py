@@ -229,3 +229,45 @@ class TestRankingResult:
         payload["lens_views"] = {**payload["lens_views"], "short_term": "   "}
         with pytest.raises(ValidationError, match="空文字列"):
             RankingResult.model_validate(payload)
+
+
+class TestRankingSignalBundle:
+    """Task 5.2.3 — RankingSignalBundle dataclass の TDD テスト。
+
+    6 skill 統合の Stage 2 Sonnet 入力シグナル束（中スコープ B、PRD §FR2）。
+    frozen dataclass で不変性を強制し、conftest fixture `make_bundle` から
+    生成される標準インスタンスを通じて Bull/Choppy/Crisis レジーム別の
+    テスト可能性を担保する。
+    """
+
+    @pytest.mark.unit
+    def test_frozen_書き換え不可(self, make_bundle: Any) -> None:
+        import dataclasses
+
+        bundle = make_bundle()
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            bundle.ticker = "MSFT"  # type: ignore[misc]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("regime", ["Bull", "Choppy", "Crisis"])
+    def test_regime_別の作成(self, make_bundle: Any, regime: str) -> None:
+        bundle = make_bundle(regime=regime)
+        assert bundle.regime == regime
+
+    @pytest.mark.unit
+    def test_デフォルト値の検証(self, make_bundle: Any) -> None:
+        bundle = make_bundle()
+        assert bundle.ticker == "AAPL"
+        assert bundle.exchange == "US"
+        assert bundle.sector == "Technology"
+        assert bundle.composite_score == 72.5
+
+    @pytest.mark.unit
+    def test_ticker_のカスタマイズ(self, make_bundle: Any) -> None:
+        bundle = make_bundle(ticker="MSFT")
+        assert bundle.ticker == "MSFT"
+
+    @pytest.mark.unit
+    def test_composite_score_のカスタマイズ(self, make_bundle: Any) -> None:
+        bundle = make_bundle(composite_score=50.0)
+        assert bundle.composite_score == 50.0

@@ -17,7 +17,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone  # noqa: F401 — timezone は将来 _build_metadata で使用
 from decimal import Decimal
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -246,3 +246,59 @@ class RankingResult(BaseModel):
                 f"lens_views の値が空文字列: {sorted(empty_keys)}"
             )
         return self
+
+
+# ---------------------------------------------------------------------------
+# RankingSignalBundle — Stage 2 Sonnet 判定の入力シグナル束
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RankingSignalBundle:
+    """Stage 2 Sonnet 判定の入力シグナル束（中スコープ B、PRD §FR2）。
+
+    6 skill 統合の入力データを 1 つの不変オブジェクトとして集約する。
+    Magic Formula / sentiment / Polymarket / 13F / Regime / Composite Score の
+    すべてのシグナルが含まれる。
+
+    Attributes:
+        ticker: 銘柄ティッカー (例: "AAPL", "7203.T")
+        exchange: 取引所 ("US" or "JP")
+        sector: 業種 (None 可)
+        composite_score: Composite Score (0-100)
+        sub_scores: サブスコア辞書 (Q/V/I/G/R/M/S の 7 因子)
+        composite_preset: 採用プリセット名 (例: "Buffett_型_暫定")
+        magic_formula_score: Magic Formula スコア (None 可)
+        roc_pct: ROC % (None 可)
+        earnings_yield_pct: Earnings Yield % (None 可)
+        momentum_1m: 1ヶ月モメンタム (None 可)
+        momentum_12m: 12ヶ月モメンタム (None 可)
+        sentiment_score: ニュースセンチメント (-1 to +1)
+        sentiment_confidence: センチメント信頼度 (0-1)
+        sentiment_themes: センチメント主題タプル
+        polymarket_macro: Polymarket 確率辞書 (例: {"fed_cut_2026": 0.62})
+        fund_holdings_delta: 13F 差分辞書 (ファンド名 -> action / value_change)
+        regime: HMM レジーム ("Bull"/"Choppy"/"Crisis")
+        regime_state_probs: レジーム状態確率辞書
+        fetched_at: 取得日時 (UTC)
+    """
+
+    ticker: str
+    exchange: Literal["US", "JP"]
+    sector: str | None
+    composite_score: float
+    sub_scores: dict[str, float]
+    composite_preset: str
+    magic_formula_score: float | None
+    roc_pct: Decimal | None
+    earnings_yield_pct: Decimal | None
+    momentum_1m: Decimal | None
+    momentum_12m: Decimal | None
+    sentiment_score: Decimal
+    sentiment_confidence: Decimal
+    sentiment_themes: tuple[str, ...]
+    polymarket_macro: dict[str, Decimal]
+    fund_holdings_delta: dict[str, dict]
+    regime: Literal["Bull", "Choppy", "Crisis"]
+    regime_state_probs: dict[str, Decimal]
+    fetched_at: datetime
