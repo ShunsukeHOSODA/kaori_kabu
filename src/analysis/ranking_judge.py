@@ -298,7 +298,7 @@ class RankingSignalBundle:
     sentiment_confidence: Decimal
     sentiment_themes: tuple[str, ...]
     polymarket_macro: dict[str, Decimal]
-    fund_holdings_delta: dict[str, dict]
+    fund_holdings_delta: dict[str, dict[str, object]]
     regime: Literal["Bull", "Choppy", "Crisis"]
     regime_state_probs: dict[str, Decimal]
     fetched_at: datetime
