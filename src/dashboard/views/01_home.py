@@ -43,6 +43,8 @@ from src.data.jquants import (
     JQuantsAuthError,
     JQuantsClient,
     JQuantsConfigError,
+    extract_close_series,
+    extract_ohlc_lowercase,
 )
 from src.portfolio.atr_alert_logger import log_atr_alert
 from src.portfolio.holdings import Portfolio
@@ -335,15 +337,46 @@ if evaluate_button:
             )
 
             one_year_ago = today - timedelta(days=370)
+            # JP は Light プラン 12 週間遅延制限により最新 ~90 日を除外。
+            # 過去 1 年（最新 90 日除く）= ~270 営業日中 ~190 営業日で十分計算可能。
+            jp_metrics_to = today - timedelta(days=90)
+            jp_metrics_from = jp_metrics_to - timedelta(days=370)
             prices_by_ticker: dict[str, pd.Series] = {}
+            risk_jp_used_delayed = False  # UI alert フラグ
             for v in valuations:
                 _h = portfolio.by_ticker(v.ticker)
                 if _h is None:
                     continue
-                # 日本株はリスク指標 1 年計算では現状スキップ（J-Quants の
-                # 1 年フル取得は別フェーズ。米国株のみで近似計算する）。
+
+                # 日本株は J-Quants v2 経路（CLAUDE.md §5: 日本株の正本）
                 if _h.exchange == "JP":
+                    if jquants_client is None:
+                        continue
+                    try:
+                        df_year = jquants_client.get_eod(
+                            v.ticker,
+                            from_date=jp_metrics_from,
+                            to_date=jp_metrics_to,
+                        )
+                    except (
+                        JQuantsAuthError,
+                        JQuantsConfigError,
+                        JQuantsAPIError,
+                        httpx.HTTPError,
+                    ):
+                        continue
+                    if len(df_year) < 30:
+                        continue
+                    try:
+                        prices_by_ticker[v.ticker] = extract_close_series(
+                            df_year, ticker_name=v.ticker
+                        )
+                    except ValueError:
+                        continue
+                    risk_jp_used_delayed = True
                     continue
+
+                # 米国 / その他は EODHD
                 try:
                     df_year = eodhd_client.get_eod(
                         v.ticker,
@@ -363,6 +396,12 @@ if evaluate_button:
                     df_year["close"].astype(float).values,
                     index=pd.to_datetime(df_year["date"]),
                     name=v.ticker,
+                )
+
+            if risk_jp_used_delayed:
+                st.info(
+                    "ℹ️ **日本株のリスク指標は最新 ~90 日除外で計算**"
+                    "（J-Quants Light の 12 週間遅延制限）"
                 )
 
             if not prices_by_ticker:
@@ -438,11 +477,49 @@ if evaluate_button:
             )
 
             atr_alerts = []
+            atr_jp_used_delayed = False  # UI alert フラグ
             for h in portfolio.holdings:
-                # 日本株は ATR 計算で現状スキップ（J-Quants の OHLC 経路は
-                # 別フェーズ。米国株のみで規律適用）。
+                # 日本株は J-Quants v2 経路（CLAUDE.md §5: 日本株の正本）。
+                # Light プラン 12 週間遅延制限により ~90 日前 → ~180 日前の
+                # ウィンドウで OHLC を取得し、過去 90 日 ATR を計算する。
                 if h.exchange == "JP":
+                    if jquants_client is None:
+                        continue
+                    try:
+                        df_jp = jquants_client.get_eod(
+                            h.ticker,
+                            from_date=today - timedelta(days=180),
+                            to_date=today - timedelta(days=90),
+                        )
+                    except (
+                        JQuantsAuthError,
+                        JQuantsConfigError,
+                        JQuantsAPIError,
+                        httpx.HTTPError,
+                    ):
+                        continue
+                    if len(df_jp) < 14:
+                        continue
+                    try:
+                        df_atr_jp = extract_ohlc_lowercase(df_jp)
+                    except ValueError:
+                        continue
+                    last_close_jp = Decimal(str(df_atr_jp["close"].iloc[-1]))
+                    try:
+                        atr_alerts.append(
+                            evaluate_alert(
+                                h.ticker,
+                                df_atr_jp[["high", "low", "close"]],
+                                last_close_jp,
+                                currency="JPY",
+                            )
+                        )
+                    except (KeyError, ValueError):
+                        continue
+                    atr_jp_used_delayed = True
                     continue
+
+                # 米国 / その他は EODHD
                 try:
                     df_atr = eodhd_client.get_eod(
                         h.ticker,
@@ -475,6 +552,18 @@ if evaluate_button:
                     )
                 except (KeyError, ValueError):
                     continue
+
+            if atr_jp_used_delayed:
+                st.warning(
+                    "⚠️ **日本株 ATR は参考値です（リアルタイム判定には使えません）**\n\n"
+                    "J-Quants Light は 12 週間遅延データのみ提供 → "
+                    "ATR ストップは **~90 日前時点のシミュレーション値**。"
+                    "**今日の利確 / 損切り判断には使わない**でください "
+                    "（規律トレーニング・過去判断レビュー用途のみ）。\n\n"
+                    "リアルタイム判定が必要な場合: "
+                    "**J-Quants Standard プランへのアップグレード** (+1,650 円/月) "
+                    "または **証券会社アプリの現物価格で判定**してください。"
+                )
 
             # breach → near → safe の順で表示。safe は折りたたみ
             _priority = {"breach": 0, "near": 1, "safe": 2}
