@@ -302,3 +302,89 @@ class RankingSignalBundle:
     regime: Literal["Bull", "Choppy", "Crisis"]
     regime_state_probs: dict[str, Decimal]
     fetched_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 純粋関数 — テキストスキャン / レジーム調整 / Half-Kelly 乗数
+# CLAUDE.md §9.3 三層防御の最終層と、Thorp 2006 Half-Kelly 強化の前段。
+# ---------------------------------------------------------------------------
+
+
+def validate_no_price_predictions(result: RankingResult) -> None:
+    """RankingResult の全テキストフィールドを一本線予測パターンで走査する。
+
+    CLAUDE.md §9.3 三層防御の最終層 (テキストスキャン)。
+    SYSTEM_PROMPT (層 1) / Pydantic スキーマ (層 2) を通過した Sonnet 出力に対し、
+    自由文中の "$200 になる" 等の予測表現を ``FORBIDDEN_PATTERNS`` で検出する。
+
+    検査対象フィールド:
+        - ``recommendation_summary``
+        - ``counter_view``
+        - ``supporting_signals`` の各要素
+        - ``risk_signals`` の各要素
+        - ``lens_views`` の各値
+
+    Args:
+        result: 検査対象の :class:`RankingResult` インスタンス。
+
+    Raises:
+        ValueError: いずれかのテキストに ``FORBIDDEN_PATTERNS`` の予測パターン
+            が検出された場合。メッセージは ``"forbidden pattern in text: ..."``
+            形式で、検出した文字列の先頭 60 文字を含む。
+    """
+    texts: tuple[str, ...] = (
+        result.recommendation_summary,
+        result.counter_view,
+        *result.supporting_signals,
+        *result.risk_signals,
+        *result.lens_views.values(),
+    )
+    for txt in texts:
+        if contains_forbidden_pattern(txt):
+            raise ValueError(f"forbidden pattern in text: {txt[:60]}...")
+
+
+def apply_regime_confidence(
+    confidence: Decimal,
+    *,
+    regime: Literal["Bull", "Choppy", "Crisis"],
+) -> Decimal:
+    """HMM レジームに応じて confidence を調整する。
+
+    Crisis レジーム時は確信度を 0.5 倍に圧縮し、過信を抑制する。
+    Bull / Choppy は等倍 (1.0 倍) で通過させる。
+    Half-Kelly 強化 (Thorp 2006) + HMM レジーム検出の連携。
+
+    Args:
+        confidence: 元の確信度 (0.0-1.0 の Decimal)。
+        regime: HMM レジーム識別子 (``"Bull"`` / ``"Choppy"`` / ``"Crisis"``)。
+
+    Returns:
+        調整後の確信度。Crisis なら ``confidence * 0.5``、それ以外は等倍。
+    """
+    factor = Decimal("0.5") if regime == "Crisis" else Decimal("1.0")
+    return confidence * factor
+
+
+def compute_kelly_multiplier(ranking_score: int) -> Decimal:
+    """ranking_score から Half-Kelly 乗数を 3 段階で決定する。
+
+    段階適用:
+        - ``score >= 80``         -> ``Decimal("1.0")`` (Full Half-Kelly)
+        - ``50 <= score < 80``    -> ``Decimal("0.5")`` (Quarter Kelly)
+        - ``score < 50``          -> ``Decimal("0.0")`` (買い見送り)
+
+    Thorp 2006 の Half-Kelly に対し、Sonnet のランキングスコア帯に応じて
+    更に半減・ゼロ化することで、低確信度時の損失リスクを抑制する。
+
+    Args:
+        ranking_score: 0-100 の整数スコア。
+
+    Returns:
+        Half-Kelly に乗算する係数 (``Decimal``)。
+    """
+    if ranking_score >= 80:
+        return Decimal("1.0")
+    if ranking_score >= 50:
+        return Decimal("0.5")
+    return Decimal("0.0")

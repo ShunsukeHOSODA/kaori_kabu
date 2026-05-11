@@ -271,3 +271,156 @@ class TestRankingSignalBundle:
     def test_composite_score_のカスタマイズ(self, make_bundle: Any) -> None:
         bundle = make_bundle(composite_score=50.0)
         assert bundle.composite_score == 50.0
+
+
+class TestValidateNoPricePredictions:
+    """Task 5.2.4 — validate_no_price_predictions の TDD テスト。
+
+    CLAUDE.md §9.3 三層防御の最終層（テキストスキャン）。
+    RankingResult の各テキストフィールドを `contains_forbidden_pattern` で
+    走査し、一本線予測パターンが含まれていれば ValueError を送出する。
+    """
+
+    @pytest.mark.unit
+    def test_recommendation_summary_の予測を検出(self) -> None:
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            validate_no_price_predictions,
+        )
+
+        payload = _valid_payload()
+        payload["recommendation_summary"] = "AAPL は $200 になる"
+        result = RankingResult.model_validate(payload)
+        with pytest.raises(ValueError, match="forbidden pattern"):
+            validate_no_price_predictions(result)
+
+    @pytest.mark.unit
+    def test_counter_view_の予測を検出(self) -> None:
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            validate_no_price_predictions,
+        )
+
+        payload = _valid_payload()
+        payload["counter_view"] = "目標株価 $250 への到達は困難"
+        result = RankingResult.model_validate(payload)
+        with pytest.raises(ValueError, match="forbidden pattern"):
+            validate_no_price_predictions(result)
+
+    @pytest.mark.unit
+    def test_supporting_signals_の予測を検出(self) -> None:
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            validate_no_price_predictions,
+        )
+
+        payload = _valid_payload()
+        payload["supporting_signals"] = (
+            "Magic Formula 上位",
+            "短期で 5% 上昇予測",
+        )
+        result = RankingResult.model_validate(payload)
+        with pytest.raises(ValueError, match="forbidden pattern"):
+            validate_no_price_predictions(result)
+
+    @pytest.mark.unit
+    def test_risk_signals_の予測を検出(self) -> None:
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            validate_no_price_predictions,
+        )
+
+        payload = _valid_payload()
+        payload["risk_signals"] = (
+            "Value Trap 懸念",
+            "3 ヶ月以内に高値更新が必要",
+        )
+        result = RankingResult.model_validate(payload)
+        with pytest.raises(ValueError, match="forbidden pattern"):
+            validate_no_price_predictions(result)
+
+    @pytest.mark.unit
+    def test_lens_views_Buffett_Munger_の予測を検出(self) -> None:
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            validate_no_price_predictions,
+        )
+
+        payload = _valid_payload()
+        payload["lens_views"] = {
+            **payload["lens_views"],
+            "Buffett_Munger": "forecast price $200 が妥当",
+        }
+        result = RankingResult.model_validate(payload)
+        with pytest.raises(ValueError, match="forbidden pattern"):
+            validate_no_price_predictions(result)
+
+    @pytest.mark.unit
+    def test_正常_payload_はraiseしない(self) -> None:
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            validate_no_price_predictions,
+        )
+
+        result = RankingResult.model_validate(_valid_payload())
+        # 例外が出ないことを確認
+        validate_no_price_predictions(result)
+
+
+class TestApplyRegimeConfidence:
+    """Task 5.2.4 — apply_regime_confidence の TDD テスト。
+
+    Crisis レジーム時に confidence を 0.5 倍に圧縮し、Bull/Choppy は等倍。
+    Half-Kelly 強化（HMM Crisis 時にレバレッジ抑制）の前段。
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("regime", "expected"),
+        [
+            ("Bull", Decimal("0.8")),
+            ("Choppy", Decimal("0.8")),
+            ("Crisis", Decimal("0.4")),
+        ],
+    )
+    def test_regime別の倍率適用(self, regime: str, expected: Decimal) -> None:
+        from src.analysis.ranking_judge import apply_regime_confidence
+
+        adjusted = apply_regime_confidence(Decimal("0.8"), regime=regime)  # type: ignore[arg-type]
+        assert adjusted == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("regime", ["Bull", "Choppy", "Crisis"])
+    def test_confidence_ゼロ時は全regimeで_ゼロ(self, regime: str) -> None:
+        from src.analysis.ranking_judge import apply_regime_confidence
+
+        adjusted = apply_regime_confidence(Decimal("0"), regime=regime)  # type: ignore[arg-type]
+        assert adjusted == Decimal("0")
+
+
+class TestComputeKellyMultiplier:
+    """Task 5.2.4 — compute_kelly_multiplier の TDD テスト。
+
+    Half-Kelly 段階適用:
+        - score >= 80 → 1.0（Full Half-Kelly）
+        - 50 <= score < 80 → 0.5（Quarter Kelly）
+        - score < 50 → 0.0（買い見送り）
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("score", "expected"),
+        [
+            (100, Decimal("1.0")),
+            (85, Decimal("1.0")),
+            (80, Decimal("1.0")),
+            (79, Decimal("0.5")),
+            (50, Decimal("0.5")),
+            (49, Decimal("0.0")),
+            (0, Decimal("0.0")),
+        ],
+    )
+    def test_score境界値の乗数(self, score: int, expected: Decimal) -> None:
+        from src.analysis.ranking_judge import compute_kelly_multiplier
+
+        assert compute_kelly_multiplier(score) == expected
