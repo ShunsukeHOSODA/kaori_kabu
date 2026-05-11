@@ -26,6 +26,19 @@ JSONL 1 行のスキーマ:
             "fetched_at": "...",
             "model_version": "claude-haiku-4-5-20251001",
             "lenses_applied": ["Buffett_Munger", ...]
+        } | null,
+        "kelly_recommendation": {                  // Phase 4 §4.2 #3 追加
+            "win_rate": "0.6",
+            "win_loss_ratio": "2.0",
+            "full_kelly_fraction": "0.4",
+            "fraction_multiplier": "0.5",
+            "half_kelly_fraction": "0.2",
+            "max_position_pct": "0.05",
+            "capped_pct": "0.05",
+            "recommended_size_jpy": "50000",
+            "portfolio_value_jpy": "1000000",
+            "calculation_method": "half_kelly_v1",
+            "academic_source": "Thorp 2006 ..."
         } | null
     }
 """
@@ -56,6 +69,7 @@ def append_decision(
     stop_loss_atr_jpy: Decimal | None = None,
     code_commit: str | None = None,
     news_context: dict[str, Any] | None = None,
+    kelly_recommendation: dict[str, Any] | None = None,
 ) -> Path:
     """売買判断を JSONL に 1 行追記（append-only）。
 
@@ -77,6 +91,10 @@ def append_decision(
             構築するのが標準。直接 dict を渡すこともできる。
             「なぜ買ったか」を市場ニュース・地政学・センチメントまで含めて
             完全再現可能にする（CLAUDE.md §9.5 / §9.8）。
+        kelly_recommendation: Half-Kelly 計算過程（Phase 4 §4.2 #3 追加）。
+            :func:`strategies.kelly.build_kelly_recommendation` で生成するのが
+            標準。「なぜこの数量を買ったか」を入力（win_rate / payoff）から
+            最終 capped 推奨サイズまで再現可能にする（CLAUDE.md §9.8.3）。
 
     Returns:
         書き込み先のパス。
@@ -98,6 +116,7 @@ def append_decision(
         ),
         "code_commit": code_commit,
         "news_context": news_context,
+        "kelly_recommendation": kelly_recommendation,
     }
 
     with log_path.open("a", encoding="utf-8") as f:

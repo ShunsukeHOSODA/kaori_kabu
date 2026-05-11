@@ -234,3 +234,123 @@ class TestReadDecisions:
         records = read_decisions(log_dir=tmp_path, year_month="2020-01")
 
         assert records == []
+
+
+@pytest.mark.unit
+class TestAppendDecisionKelly:
+    """Half-Kelly 推奨情報を Decision Log に保存（§4.2 #3、handoff-phase4.md）。
+
+    Provenance §9.8.3: 「なぜこの数量を買ったか」を Kelly 計算過程込みで再現可能に。
+    """
+
+    def test_kelly_recommendation埋め込み(self, tmp_path: Path) -> None:
+        """BUY 時に kelly_recommendation dict が JSONL に保存される。"""
+        from portfolio.decision_log import append_decision
+
+        kelly_rec = {
+            "win_rate": "0.6",
+            "win_loss_ratio": "2.0",
+            "full_kelly_fraction": "0.4",
+            "fraction_multiplier": "0.5",
+            "half_kelly_fraction": "0.2",
+            "max_position_pct": "0.05",
+            "capped_pct": "0.05",
+            "recommended_size_jpy": "50000",
+            "portfolio_value_jpy": "1000000",
+            "calculation_method": "half_kelly_v1",
+            "academic_source": "Thorp 2006",
+        }
+
+        log_path = append_decision(
+            log_dir=tmp_path,
+            action="BUY",
+            ticker="AAPL",
+            shares=Decimal("2"),
+            price_jpy=Decimal("25000"),
+            rationale="Magic Formula 87/100 + Half-Kelly 推奨",
+            kelly_recommendation=kelly_rec,
+        )
+
+        record = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert record["kelly_recommendation"]["recommended_size_jpy"] == "50000"
+        assert record["kelly_recommendation"]["capped_pct"] == "0.05"
+        assert (
+            record["kelly_recommendation"]["calculation_method"] == "half_kelly_v1"
+        )
+        assert "Thorp" in record["kelly_recommendation"]["academic_source"]
+
+    def test_kelly_recommendation省略時はNone(self, tmp_path: Path) -> None:
+        """既存呼び出し（kelly 引数なし）でも壊れず、フィールドは None。"""
+        from portfolio.decision_log import append_decision
+
+        log_path = append_decision(
+            log_dir=tmp_path,
+            action="BUY",
+            ticker="MSFT",
+            shares=Decimal("5"),
+            price_jpy=Decimal("60000"),
+            rationale="既存呼び出し（後方互換）",
+        )
+
+        record = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert record["kelly_recommendation"] is None
+
+
+@pytest.mark.unit
+class TestBuildKellyRecommendation:
+    """Half-Kelly 計算過程を Decision Log 直書き可能な dict 化するヘルパー。"""
+
+    def test_必須フィールドが揃う(self) -> None:
+        from strategies.kelly import KellyParams, build_kelly_recommendation
+
+        params = KellyParams(win_rate=Decimal("0.6"), win_loss_ratio=Decimal("2.0"))
+        rec = build_kelly_recommendation(
+            params=params, portfolio_value_jpy=Decimal("1000000")
+        )
+
+        # Provenance §9.8.2 で要求される全フィールド
+        required = {
+            "win_rate",
+            "win_loss_ratio",
+            "full_kelly_fraction",
+            "fraction_multiplier",
+            "half_kelly_fraction",
+            "max_position_pct",
+            "capped_pct",
+            "recommended_size_jpy",
+            "portfolio_value_jpy",
+            "calculation_method",
+            "academic_source",
+        }
+        assert required <= set(rec.keys())
+        # 全値が JSON シリアライズ可能（str / 既知型）
+        for v in rec.values():
+            assert isinstance(v, str)
+
+    def test_capped_5pct上限(self) -> None:
+        """高勝率 + 高損益比でも 5% を超えない（破滅リスク回避）。"""
+        from strategies.kelly import KellyParams, build_kelly_recommendation
+
+        # 勝率 80%、損益比 5.0 → full Kelly = 0.8 - 0.2/5.0 = 0.76 → half = 0.38
+        # 5% capped で recommended_size = portfolio_value * 0.05
+        params = KellyParams(win_rate=Decimal("0.8"), win_loss_ratio=Decimal("5.0"))
+        rec = build_kelly_recommendation(
+            params=params, portfolio_value_jpy=Decimal("1000000")
+        )
+
+        assert Decimal(rec["capped_pct"]) == Decimal("0.05")
+        assert Decimal(rec["recommended_size_jpy"]) == Decimal("50000")
+        # 計算過程は full Kelly のままで残る（透明性 §9.8）
+        assert Decimal(rec["full_kelly_fraction"]) > Decimal("0.5")
+
+    def test_負のKellyは0(self) -> None:
+        """勝率 30% 損益比 1.0 → full Kelly = -0.4 → 0 にクリップ。"""
+        from strategies.kelly import KellyParams, build_kelly_recommendation
+
+        params = KellyParams(win_rate=Decimal("0.3"), win_loss_ratio=Decimal("1.0"))
+        rec = build_kelly_recommendation(
+            params=params, portfolio_value_jpy=Decimal("1000000")
+        )
+
+        assert Decimal(rec["full_kelly_fraction"]) == Decimal("0")
+        assert Decimal(rec["recommended_size_jpy"]) == Decimal("0")

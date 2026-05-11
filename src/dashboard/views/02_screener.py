@@ -53,6 +53,7 @@ from src.data.eodhd import EODHDAPIError, EODHDClient
 from src.data.famous_holdings import get_famous_owners, render_owner_badges
 from src.data.news import MarketContext, NewsClient
 from src.data.yfinance import YFinanceClient, make_default_yfinance_client
+from src.strategies.kelly import KellyParams, build_kelly_recommendation
 from src.ui.components import (
     composite_radar_chart,
     format_lenses_applied,
@@ -742,6 +743,24 @@ with st.sidebar:
     else:
         composite_preset = "Buffett_型_暫定"
 
+    # ───────────────────────────────────────────────
+    # 📐 Half-Kelly 推奨サイズ（§4.2 #3、handoff-phase4.md）
+    # ───────────────────────────────────────────────
+    st.subheader("📐 Half-Kelly 推奨")
+    portfolio_value_jpy_input = st.number_input(
+        "ポートフォリオ評価額 (JPY)",
+        min_value=100_000,
+        max_value=1_000_000_000,
+        value=1_000_000,
+        step=100_000,
+        help=(
+            "Half-Kelly でポジション推奨を計算する基準額。"
+            "Composite Score テーブルに「Kelly推奨JPY」列を併記。"
+            "Overconfidence 対策で 5% 上限キャップ済。"
+        ),
+        disabled=not (enable_composite and real_mode),
+    )
+
     run_button = st.button(
         "🚀 スクリーニング実行",
         type="primary",
@@ -936,6 +955,21 @@ if run_button:
             f"投資スタイル: **{PRESET_DISPLAY_LABELS[composite_preset]}** — "
             f"{PRESET_RATIONALE[composite_preset]}"
         )
+        # §4.2 #3: Half-Kelly 推奨サイズの注記（暫定値の根拠を明示、§9.4 / §9.7）
+        st.info(
+            "📌 **Half-Kelly 推奨** は暫定値で計算: "
+            "**勝率 60%**（Magic Formula 経験則、Greenblatt 2010）/ "
+            "**損益比 2.0**（ATR 2R ストップ設計）/ "
+            "**1 銘柄上限 5%**（Overconfidence 対策、Thorp 2006）。"
+            "実バックテスト結果が揃い次第、銘柄別の実測値で更新予定。"
+        )
+
+        # Half-Kelly 暫定パラメータ（保守的、後で実バックテストで上書き）
+        _kelly_params_default = KellyParams(
+            win_rate=Decimal("0.6"),
+            win_loss_ratio=Decimal("2.0"),
+        )
+        _portfolio_value_jpy_dec = Decimal(str(portfolio_value_jpy_input))
 
         composite_rows: list[dict[str, Any]] = []
         composite_warnings: list[tuple[str, list[Any]]] = []
@@ -996,6 +1030,13 @@ if run_button:
             _ticker_with_badge = (
                 f"{ticker_name} {render_owner_badges(_owners)}" if _owners else ticker_name
             )
+            # Half-Kelly 推奨サイズ（暫定値、§4.2 #3）
+            _kelly_rec = build_kelly_recommendation(
+                params=_kelly_params_default,
+                portfolio_value_jpy=_portfolio_value_jpy_dec,
+            )
+            _kelly_size_jpy = int(Decimal(_kelly_rec["recommended_size_jpy"]))
+
             composite_rows.append(
                 {
                     "ティッカー": _ticker_with_badge,
@@ -1007,6 +1048,7 @@ if run_button:
                     "R": f"{composite.sub_scores['R']:.0f}",
                     "M": f"{composite.sub_scores['M']:.0f}",
                     "S": f"{composite.sub_scores['S']:.0f}",
+                    "Kelly推奨JPY": f"¥{_kelly_size_jpy:,}",
                     "警告": warning_severity,
                 }
             )
