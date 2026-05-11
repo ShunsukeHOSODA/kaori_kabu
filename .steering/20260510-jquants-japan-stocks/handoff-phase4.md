@@ -402,7 +402,7 @@ Session 2 で §4.1 #2 / §4.2 #3 / §4.3 / §4.5 を一気に完了させ、§4
 
 **TDD**: 5 件（append_decision Kelly 2 + build_kelly_recommendation 3）
 
-**残課題**: BUY ボタン経路新規実装（次セッション以降、Light upgrade と組み合わせて運用品質を上げてから）
+**残課題**: ~~BUY ボタン経路新規実装（次セッション以降）~~ → **§12 Session 3 で完了**（2026-05-12、commit `87297a7`）
 
 ### 11.4 §4.3 — J-Quants プラン整理（4 コミットの大連鎖）
 
@@ -511,3 +511,187 @@ Phase 4 完了。Phase 5 の方向性を決めたい。docs/product-requirements
 ---
 
 **handoff-phase4.md Session 2 (後半) 終わり**
+
+---
+
+## 12. Session 3 追加成果（2026-05-11 深夜〜2026-05-12 早朝）
+
+Session 2 残課題「§11.3 BUY ボタン経路新規実装」を一気に完了。新規ロジック層 + UI 統合 + Playwright E2E 検証 + commit を一筆書きで完遂。
+
+### 12.1 完了タスク（commit `87297a7`）
+
+| 項目 | 詳細 |
+|---|---|
+| **目的** | §11.3 残課題（02_screener Composite Score テーブル → BUY → Decision Log の Kelly 込み書き込み）の Streamlit UI フル実装 |
+| **新規ファイル** | `src/portfolio/buy_decision.py`（ロジック層）/ `tests/unit/portfolio/test_buy_decision.py`（TDD 3 件）/ `.steering/.../e2e-buy-recorded-verified.png`（E2E 証跡） |
+| **修正ファイル** | `src/dashboard/views/02_screener.py`（BUY フォーム追加 + session_state 永続化）/ `src/config/settings.py`（MF_TOP_N default 30 → 5）/ `.env`（MF_TOP_N=5、git 管理外） |
+| **stats** | 5 files / +455 / -6、全 unit test 374 PASS、ruff クリーン |
+
+### 12.2 §11.3 残課題の実装
+
+**ロジック層分離** (`src/portfolio/buy_decision.py`):
+- `ScreenerTrigger` (frozen dataclass): skill / preset / composite_score / sub_scores / screener_run_at
+- `BuyOrderRequest` (frozen dataclass): ticker / shares / price_jpy / trigger / kelly_params / portfolio_value_jpy / additional_rationale / stop_loss_atr_jpy / code_commit
+- `submit_buy_order(request, *, log_dir) -> Path`: build_kelly_recommendation で Kelly 計算過程を dict 化 → trigger を JSON シリアライズ可能な dict に整形 → composite_score + preset + 追加根拠 から rationale 自動生成 → append_decision に委譲
+
+**UI 統合** (`02_screener.py`):
+- Composite Score テーブル直下に BUY フォーム（銘柄 selectbox / 株価 number_input / 株数 number_input / 追加根拠 text_input / BUY 確定 form_submit_button）
+- Kelly 推奨額 ÷ 株価 を初期株数の暫定値として自動算出（最低 1 株）
+- 注文額が Kelly 上限超過時に `st.warning` で Overconfidence バイアス警告（§9.7）
+- `code_commit` / `screener_run_at` は `result.metadata` から自動付与
+
+**TDD** (`tests/unit/portfolio/test_buy_decision.py`、3 件):
+1. `kelly_recommendation_込みでJSONLを書く` — capped 5% × ¥1,000,000 = ¥50,000 を検証
+2. `trigger_に_screener_metadata_が含まれる` — preset / composite_score / sub_scores / screener_run_at 全てを検証
+3. `rationale_にcomposite_score_と追加根拠_が含まれる` — auto-built rationale + ユーザー追記の結合を検証
+
+### 12.3 重要な設計判断: Streamlit `st.form` rerun 問題への対処
+
+**初実装で発覚した問題**: BUY フォーム送信 → Streamlit ページ全体 rerun → `if run_button:` ブロックが False になりスキップ → `submit_buy` ハンドラに到達せず → JSONL 未追記。
+
+**Playwright での発見プロセス**:
+- 初回 E2E 試行で `wait_for("BUY 記録完了")` が 30 秒タイムアウト
+- `wc -l data/decision-log/2026-05.jsonl` が 1 のまま（追記されていない）
+- snapshot で「左サイドバーでパラメータを設定し...」に戻っていることを確認
+- → form submit 時の rerun 挙動が原因と特定
+
+**解決策**: `st.session_state` 永続化で run_button=False でも BUY フォームが動作するようにする。
+
+```python
+# if run_button: 内、composite_rows 計算終了後
+st.session_state["screening_session"] = {
+    "composite_rows": composite_rows,
+    "composite_preset": composite_preset,
+    "kelly_params_default": _kelly_params_default,
+    "portfolio_value_jpy_dec": _portfolio_value_jpy_dec,
+    "calculated_at_iso": result.metadata.calculated_at.isoformat(),
+    "code_commit": result.metadata.code_commit,
+}
+
+# 既存 `else: st.info("左サイドバーで...")` を以下に置き換え
+if "screening_session" in st.session_state:
+    _ls = st.session_state["screening_session"]
+    composite_rows = _ls["composite_rows"]
+    # ... BUY フォーム表示 + ハンドラ
+    if submit_buy:
+        # submit_buy_order 呼び出し
+        st.session_state["last_buy_result"] = {"message": _success_msg}
+elif not run_button:
+    st.info("左サイドバーで...")
+```
+
+**UX 上の妥協**: BUY 確定後の rerun でテーブル / レーダーチャートは消える（次回スクリーニング実行で復元）。BUY フォーム + 「BUY 記録完了」メッセージは session_state で残るので JSONL 書き込みパスは保証。完全な UX 維持には「結果表示ロジック全体を session_state ベースに refactor」が必要だが、今回は最小スコープに留めた（Phase 5 または BUY フォーム再訪時に対処）。
+
+### 12.4 Playwright E2E 検証結果
+
+**シナリオ**: AAPL / MSFT / GOOGL の 3 銘柄でスクリーニング → AAPL を選択 → 株数 2 株 / 株価 ¥25,000 / 追加根拠「E2E 検証 — BUY ボタン経路 + Decision Log 連携」→ BUY 確定。
+
+**JSONL 追記確認** (`data/decision-log/2026-05.jsonl`、1 行 → 2 行):
+
+```json
+{
+  "timestamp": "2026-05-11T15:20:17.443959+00:00",
+  "action": "BUY",
+  "ticker": "AAPL",
+  "shares": "2",
+  "price_jpy": "25000",
+  "rationale": "AAPL Composite Score 57.2/100（Buffett_型_暫定 プリセット）。追加根拠: E2E 検証 — BUY ボタン経路 + Decision Log 連携",
+  "trigger": {
+    "skill": "composite-score-screener",
+    "preset": "Buffett_型_暫定",
+    "composite_score": "57.2",
+    "sub_scores": {"Q": "100", "V": "26", "I": "17", "G": "23", "R": "74", "M": "100", "S": "50"},
+    "screener_run_at": "2026-05-11T15:19:17.436796+00:00"
+  },
+  "stop_loss_atr_jpy": null,
+  "code_commit": "37d780c",
+  "news_context": null,
+  "kelly_recommendation": {
+    "win_rate": "0.6", "win_loss_ratio": "2.0",
+    "full_kelly_fraction": "0.4", "fraction_multiplier": "0.5", "half_kelly_fraction": "0.20",
+    "max_position_pct": "0.05", "capped_pct": "0.05",
+    "recommended_size_jpy": "50000.00", "portfolio_value_jpy": "1000000",
+    "calculation_method": "half_kelly_v1",
+    "academic_source": "Thorp 2006 \"The Kelly Criterion in Blackjack, Sports Betting, and the Stock Market\""
+  }
+}
+```
+
+**Provenance §9.8.3 全項目達成**: rationale auto-built + trigger (5 フィールド + sub_scores 7 軸) + kelly_recommendation (11 フィールド) + code_commit + screener_run_at。「なぜこの数量を買ったか」を Kelly 計算過程込みで完全再現可能。
+
+### 12.5 副次的な改善
+
+| 改善 | 詳細 |
+|---|---|
+| **MF_TOP_N default 30 → 5** | ユーザー指示「3 銘柄入力で表示件数 30 は冗長、デフォルト 5 でいい」を反映。`.env` / `settings.py` の両方を更新（pydantic-settings は起動時のみ env 読込なので Streamlit 再起動で反映） |
+| **`composite_rows` に `_ticker_raw` 内部キー** | バッジ除去後の raw ticker を BUY フォームの selectbox オプションに使用するため。表示 DataFrame では `drop(columns=["_ticker_raw"])` |
+| **既存 unused import 除去** | `from src.analysis.investor_lenses import INVESTOR_LENSES` を unused として削除（気配り実行） |
+| **既知 import path 問題の修正** | `buy_decision.py` 内の `from portfolio.decision_log import ...` を `from src.portfolio.decision_log import ...` に修正（pytest は `pythonpath=["src"]` で前者も動くが Streamlit は後者のみ受け付ける）。02_screener.py 既存パターンと統一 |
+
+### 12.6 学び
+
+- **TDD だけでは UI ランタイムバグを検出できない**: ユニットテストは GREEN だったが Streamlit form submit の rerun 挙動で UI が壊れていた。E2E 検証（Playwright）を回したから発見できた。**「ユニットテスト + import 検証 + E2E」の 3 段ゲートが必要**。
+- **Streamlit `st.form` の rerun 仕様**: form submit は **ページ全体** rerun を引き起こすため、フォームを `if run_button:` 内に置くと submit ハンドラが届かない。**form は session_state でデータ受け渡しできる外側に置く**のが Streamlit イディオム。
+- **Fact-Forcing Gate との付き合い方**: GateGuard は重要操作前に「呼び出し元 / 既存ファイル重複 / データ構造 / ユーザー指示 verbatim」を求める。承認済みでも retry 時に毎回求められるが、慣れれば 5-10 秒で書ける。
+- **Auto mode classifier**: Streamlit 起動のような「長時間サーバー起動 + ローカルポート expose」はクラシファイヤに拒否される。ユーザーに別ターミナルから起動してもらうのが現実解。
+- **Playwright での Streamlit 検証は確実**: snapshot + grep ref + click/type で堅実に動作確認できる。スクショは `.steering/[task-id]/` 配下に置く慣習を確立。
+
+### 12.7 持ち越し中の課題
+
+- **§4.4 TOPIX ベンチマーク**（JP 銘柄保有開始時に Light upgrade と一緒に）
+- **5.4 git config user.email/name 未設定**（コミット時 warning 出るが実害なし、handoff §5.4 既知）
+- **§12.3 UX 妥協**: BUY 確定後のテーブル/レーダー消失問題。Phase 5 で結果表示ロジック全体を session_state ベース refactor することで根本解決可能（今回は最小スコープ）
+- **5.6 13F-NT UI 表示分岐**（前回から継続、優先度低）
+
+### 12.8 次セッション開始用プロンプト
+
+#### 案 1. §4.4 TOPIX ベンチマーク（JP 銘柄保有開始後）
+
+```
+日本株を 1 銘柄買ったので、J-Quants Light upgrade + §4.4 TOPIX ベンチマークを実装したい。
+
+事前読み込み:
+- .steering/20260510-jquants-japan-stocks/handoff-phase4.md §11.5 / §12
+- docs/cost-budget.md「J-Quants プラン比較」
+- ~/.claude/projects/-Users-kaori-Desktop-kaori-kabu/memory/jquants_account.md
+- src/analysis/risk_metrics.py::compute_benchmark_comparison
+
+実装方針:
+- Light 契約 → API キー再発行 → .env 更新
+- scripts/verify_jquants_today.py で当日 EOD 取得確認
+- 01_home.py の to_date = today - 90d ロジック撤回 + UI 警告削除
+- §4.4 compute_benchmark_comparison に benchmark_currency 追加
+- TOPIX 連動 ETF 1306 取得 + JP 比率 50% 超で 50:50 加重平均
+- TDD 通貨混合テスト 2-3 件
+```
+
+#### 案 2. §12.3 UX 改善（結果表示ロジック session_state refactor）
+
+```
+.steering/20260510-jquants-japan-stocks/handoff-phase4.md §12.3 で先送りした
+UX 妥協（BUY 確定後にテーブル / レーダーが消える）を refactor で解消したい。
+
+事前読み込み:
+- .steering/.../handoff-phase4.md §12.3
+- src/dashboard/views/02_screener.py の if run_button: ブロック全体（line 826-1183 周辺）
+
+実装方針:
+- 結果表示ロジック（st.success / Provenance / 結果テーブル / 推奨カード / 
+  Composite テーブル / レーダー / リスク警告）を関数化（display_screening_results()）
+- screening 計算結果（result / composite_rows / radar_data / etc）を session_state["screening_session"] に保存
+- if run_button: 内で計算 + 表示関数呼び出し、外で session_state があれば
+  表示関数を呼ぶ（rerun でもテーブルが残る）
+- E2E で BUY 確定後にテーブル維持されることを Playwright で再検証
+- コミット規約: refactor(screener): 結果表示 session_state refactor [20260510-jquants-japan-stocks]
+```
+
+#### 案 3. Phase 5 着手（PRD 整理 + 次の方向性）
+
+```
+Phase 4 完了。Session 3 まで一連の改善も終わったので、Phase 5 の方向性を決めたい。
+docs/product-requirements.md を読んで、次に進めるべきタスクを 3 案提示してほしい。
+```
+
+---
+
+**handoff-phase4.md Session 3 終わり**
