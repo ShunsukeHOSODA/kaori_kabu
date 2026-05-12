@@ -4,12 +4,27 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 import pytest
 
-# モジュールレベルの sentinel — kwarg 既定値で「未指定」を判定するために使う。
-# None を渡せるフィールド（sector）と区別するため別 sentinel を使用する。
-_unset: object = object()
+
+# モジュールレベルの sentinel クラス -- kwarg 既定値で "未指定" を判定するために使う。
+# None を渡せるフィールド -- sector -- と区別するため、None ではなく独自 sentinel を
+# 使用。クラス化することで mypy が ``str | None | type[_Unset]`` のような union
+# 型で取り扱え、``type: ignore[arg-type]`` を削減できる。
+class _Unset:
+    """sentinel 専用クラス。インスタンス化せず、type[_Unset] を比較に使う。"""
+
+
+# 単一の sentinel 値 -- 型は ``type[_Unset]``
+_UNSET: type[_Unset] = _Unset
+
+# fixture kwarg 用の型エイリアス
+_SectorArg = str | None | type[_Unset]
+_MacroArg = dict[str, Decimal] | type[_Unset]
+_HoldingsArg = dict[str, dict[str, object]] | type[_Unset]
+_RegimeArg = Literal["Bull", "Choppy", "Crisis"]
 
 
 @pytest.fixture
@@ -27,16 +42,30 @@ def make_bundle() -> Callable[..., object]:
 
     def _make(
         ticker: str = "AAPL",
-        regime: str = "Bull",
+        regime: _RegimeArg = "Bull",
         composite_score: float = 72.5,
-        sector: object = _unset,
-        polymarket_macro: object = _unset,
-        fund_holdings_delta: object = _unset,
+        sector: _SectorArg = _UNSET,
+        polymarket_macro: _MacroArg = _UNSET,
+        fund_holdings_delta: _HoldingsArg = _UNSET,
     ) -> object:
+        # _UNSET sentinel を解決 — 各引数の concrete 型に narrowing
+        resolved_sector: str | None = (
+            "Technology" if sector is _UNSET else sector  # type: ignore[assignment]
+        )
+        resolved_macro: dict[str, Decimal] = (
+            {"fed_cut_2026": Decimal("0.62")}
+            if polymarket_macro is _UNSET
+            else polymarket_macro  # type: ignore[assignment]
+        )
+        resolved_holdings: dict[str, dict[str, object]] = (
+            {"Berkshire": {"action": "NEW", "value_change_usd": 5_200_000_000}}
+            if fund_holdings_delta is _UNSET
+            else fund_holdings_delta  # type: ignore[assignment]
+        )
         return RankingSignalBundle(
             ticker=ticker,
             exchange="US",
-            sector="Technology" if sector is _unset else sector,  # type: ignore[arg-type]
+            sector=resolved_sector,
             composite_score=composite_score,
             sub_scores={"Q": 90, "V": 50, "I": 30, "G": 60, "R": 80, "M": 70, "S": 55},
             composite_preset="Buffett_型_暫定",
@@ -48,17 +77,9 @@ def make_bundle() -> Callable[..., object]:
             sentiment_score=Decimal("0.4"),
             sentiment_confidence=Decimal("0.7"),
             sentiment_themes=("iPhone 出荷",),
-            polymarket_macro=(
-                {"fed_cut_2026": Decimal("0.62")}
-                if polymarket_macro is _unset
-                else polymarket_macro  # type: ignore[arg-type]
-            ),
-            fund_holdings_delta=(
-                {"Berkshire": {"action": "NEW", "value_change_usd": 5_200_000_000}}
-                if fund_holdings_delta is _unset
-                else fund_holdings_delta  # type: ignore[arg-type]
-            ),
-            regime=regime,  # type: ignore[arg-type]
+            polymarket_macro=resolved_macro,
+            fund_holdings_delta=resolved_holdings,
+            regime=regime,
             regime_state_probs={
                 "Bull": Decimal("0.6"),
                 "Choppy": Decimal("0.3"),

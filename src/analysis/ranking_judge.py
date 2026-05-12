@@ -499,8 +499,9 @@ def compute_kelly_multiplier(ranking_score: int) -> Decimal:
 #
 # 型安全な fund_holdings_delta 処理:
 #     bundle.fund_holdings_delta は dict[str, dict[str, object]] のため、
-#     value_change_usd は object 型で返る。isinstance(int, float) ガードで
-#     float キャストの安全性を確保する。
+#     value_change_usd は object 型で返る。非数値は上流データ破損のシグナルと
+#     して TypeError で fail-fast し、CLAUDE.md §9.3 silent 0.0 置換禁止 /
+#     global rules never silently swallow errors を遵守する。
 # ---------------------------------------------------------------------------
 
 
@@ -513,6 +514,10 @@ def _format_holdings(holdings: dict[str, dict[str, object]]) -> str:
     Returns:
         ``- {fund}: {action} (Δ ${value_m:.1f}M)`` を行頭 ``-`` で連結した
         markdown。``holdings`` が空辞書なら ``"- (差分なし)"`` を返す。
+
+    Raises:
+        TypeError: ``value_change_usd`` が ``int`` でも ``float`` でもない
+            場合 -- 上流データ破損を fail-fast で表面化。
     """
     if not holdings:
         return "- (差分なし)"
@@ -520,9 +525,12 @@ def _format_holdings(holdings: dict[str, dict[str, object]]) -> str:
     for fund, data in holdings.items():
         action = str(data.get("action", "-"))
         raw_value = data.get("value_change_usd", 0)
-        value_m = (
-            float(raw_value) / 1e6 if isinstance(raw_value, (int, float)) else 0.0
-        )
+        if not isinstance(raw_value, (int, float)):
+            raise TypeError(
+                f"value_change_usd must be int or float for fund {fund!r}, "
+                f"got {type(raw_value).__name__}"
+            )
+        value_m = float(raw_value) / 1e6
         lines.append(f"- {fund}: {action} (Δ ${value_m:.1f}M)")
     return "\n".join(lines)
 
@@ -543,7 +551,13 @@ def _format_macro(macro: dict[str, Decimal]) -> str:
 
 
 def _format_optional(value: object) -> str:
-    """``None`` を ``"N/A"`` に置換した文字列を返す（その他は ``str()``）。"""
+    """``None`` を ``"N/A"`` に置換した文字列を返す（その他は ``str()``）。
+
+    型契約: ``value`` は ``Decimal | None`` を想定する。``float`` を渡しては
+    ならない -- ``str(float)`` は IEEE 754 丸めにより非決定論となり、
+    Anthropic Prompt Caching の byte-identical ヒット保証を破るため。
+    呼び出し側は ``Decimal`` or ``None`` を保持する。
+    """
     if value is None:
         return "N/A"
     return str(value)

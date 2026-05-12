@@ -551,15 +551,18 @@ class TestBuildRankingUserMessage:
     @pytest.mark.parametrize(
         "must_include",
         [
+            # ticker -- 値チェック、ヘッダではない
             "AAPL",
-            "Composite Score",
-            "Magic Formula",
-            "Polymarket",
-            "13F",
-            "Regime",
+            # セクションヘッダ -- `### ` プレフィックスで値衝突を防止
+            "### Composite Score",
+            "### Magic Formula",
+            "### Polymarket",
+            "### 13F",
+            "### Regime",
+            "### ニュースセンチメント",
+            "### モメンタム",
+            # regime 値 -- 意図的な値チェック
             "Bull",
-            "ニュースセンチメント",
-            "モメンタム",
         ],
     )
     def test_必須セクション全て含まれる(
@@ -684,6 +687,49 @@ class TestBuildRankingUserMessage:
         )
         msg = build_ranking_user_message(bundle)
         assert "(なし)" in msg
+
+    @pytest.mark.unit
+    def test_fund_holdings_非数値value_は_TypeError(self) -> None:
+        """value_change_usd が非数値 -- 例: str "5B" -- なら TypeError で fail-fast.
+
+        CLAUDE.md §9.3 / global "never silently swallow errors" 遵守。
+        以前の silent 0.0 置換は上流データ破損を隠蔽するため撤回した。
+        """
+        from src.analysis.ranking_judge import (
+            RankingSignalBundle,
+            build_ranking_user_message,
+        )
+
+        bad_bundle = RankingSignalBundle(
+            ticker="AAPL",
+            exchange="US",
+            sector="Technology",
+            composite_score=70.0,
+            sub_scores={"Q": 80, "V": 50, "I": 30, "G": 60, "R": 70, "M": 60, "S": 50},
+            composite_preset="Buffett_型_暫定",
+            magic_formula_score=80.0,
+            roc_pct=Decimal("25.0"),
+            earnings_yield_pct=Decimal("7.0"),
+            momentum_1m=Decimal("2.0"),
+            momentum_12m=Decimal("20.0"),
+            sentiment_score=Decimal("0.3"),
+            sentiment_confidence=Decimal("0.6"),
+            sentiment_themes=("iPhone 出荷",),
+            polymarket_macro={"fed_cut_2026": Decimal("0.5")},
+            # 非数値 str を意図的に渡す -- 上流データ破損を再現
+            fund_holdings_delta={
+                "Berkshire": {"action": "NEW", "value_change_usd": "5B"}
+            },
+            regime="Bull",
+            regime_state_probs={
+                "Bull": Decimal("0.6"),
+                "Choppy": Decimal("0.3"),
+                "Crisis": Decimal("0.1"),
+            },
+            fetched_at=datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
+        )
+        with pytest.raises(TypeError, match="value_change_usd"):
+            build_ranking_user_message(bad_bundle)
 
     @pytest.mark.unit
     def test_None_フィールド_NA_表示(self) -> None:
