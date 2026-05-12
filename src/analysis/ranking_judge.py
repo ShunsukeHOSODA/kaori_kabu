@@ -663,7 +663,7 @@ def _extract_json(text: str) -> dict[str, Any]:
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end == -1 or end < start:
-        raise ValueError("JSON not found in response")
+        raise ValueError("JSON not found in ranking judge response")
     return json.loads(text[start : end + 1])  # type: ignore[no-any-return]
 
 
@@ -681,7 +681,7 @@ def _compute_bundle_hash(bundle: RankingSignalBundle) -> str:
         "ticker": bundle.ticker,
         "exchange": bundle.exchange,
         "composite_score": bundle.composite_score,
-        "sub_scores": bundle.sub_scores,
+        "sub_scores": {k: str(v) for k, v in bundle.sub_scores.items()},
         "composite_preset": bundle.composite_preset,
         "magic_formula_score": bundle.magic_formula_score,
         "roc_pct": str(bundle.roc_pct),
@@ -719,6 +719,13 @@ def _build_fallback_result(
 
     Returns:
         埋め値で構築された :class:`RankingResult`。
+
+    Note:
+        本関数は ``validate_no_price_predictions`` を呼ばずに結果を返す。
+        lens_views / recommendation_summary / counter_view / signals の
+        文字列は全てこの関数内のハードコード定数で forbidden pattern を含まない
+        ことが静的に保証されているため安全。**将来これらの文字列を変更する
+        場合は、必ず forbidden pattern を含まないことを確認すること。**
     """
     score = int(bundle.composite_score)
     return RankingResult(
@@ -836,8 +843,10 @@ def rank_single_with_claude(
         input_bundle_hash=_compute_bundle_hash(bundle),
         cache_hit=False,
         cache_age_sec=None,
-        input_tokens=getattr(response.usage, "input_tokens", 0) or 0,
-        output_tokens=getattr(response.usage, "output_tokens", 0) or 0,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        # cache_read_input_tokens は Prompt Caching ヒット時のみ Anthropic SDK が
+        # 設定する。キャッシュ未使用時は属性自体が省略されるため getattr ガードが必要。
         input_tokens_cached=(
             getattr(response.usage, "cache_read_input_tokens", 0) or 0
         ),
