@@ -439,21 +439,15 @@ class TestSystemPrompt:
     """
 
     @pytest.mark.unit
-    def test_存在と非空(self) -> None:
-        from src.analysis.ranking_judge import SYSTEM_PROMPT
-
-        assert isinstance(SYSTEM_PROMPT, str)
-        assert len(SYSTEM_PROMPT) > 0
-
-    @pytest.mark.unit
     def test_文字数下限_2400(self) -> None:
         """Prompt Caching 2,048 token 下限の char proxy（≥ 2,400）。
 
         Japanese 混在テキストにおける Claude tokenizer の
-        実効レートを考慮した安全側下限。
+        実効レートを考慮した安全側下限。型チェックも統合。
         """
         from src.analysis.ranking_judge import SYSTEM_PROMPT
 
+        assert isinstance(SYSTEM_PROMPT, str)
         assert len(SYSTEM_PROMPT) >= 2400, (
             f"SYSTEM_PROMPT char count={len(SYSTEM_PROMPT)}, "
             "Prompt Caching 2048 token 下限を満たさない可能性"
@@ -498,7 +492,8 @@ class TestSystemPrompt:
             "上昇率",
             "期限付き",
             "投資助言",
-            "$",
+            # 文脈密着型サブストリング: SYSTEM_PROMPT の "$ や ¥ に続く具体的な数値" にマッチ
+            "$ や ¥",
         ],
     )
     def test_禁止事項_明示(self, forbidden_topic: str) -> None:
@@ -506,6 +501,8 @@ class TestSystemPrompt:
 
         単純な `in` チェックでよい（禁止語が「禁止」コンテキスト下で
         参照されていることを SYSTEM_PROMPT 設計者責任で担保）。
+        `"$"` 単体ではなく文脈密着型サブストリング `"$ や ¥"` を使い、
+        将来の編集での偶発通過 例: 変数名 `$FILE_PATH` 等 を防ぐ。
         """
         from src.analysis.ranking_judge import SYSTEM_PROMPT
 
