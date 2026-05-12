@@ -768,3 +768,192 @@ class TestBuildRankingUserMessage:
         )
         msg = build_ranking_user_message(bundle)
         assert "N/A" in msg
+
+
+class TestRankSingleWithClaude:
+    """Task 5.2.7 — rank_single_with_claude + PRD §FR5 多段縮退 の TDD テスト。
+
+    Sonnet 4.6 ranking judge 本体。3 つの recovery path（PRD §FR5）:
+        1. API exception → composite_score 埋め fallback
+        2. Pydantic schema 違反 → composite_score 埋め fallback
+        3. 一本線予測検出 → composite_score 埋め fallback
+
+    どのパスでも `RankingResult` を必ず返し、ランキング処理が停止しないこと
+    を保証する。失敗理由は `fallback_reason` で UI 側に明示される。
+    """
+
+    @pytest.fixture
+    def good_response(self) -> Any:
+        """Sonnet 4.6 が返す正常 JSON response の MagicMock 互換オブジェクト。"""
+
+        class _C:
+            text = (
+                '{"ranking_score": 78, '
+                '"recommendation_summary": "Composite 高 + 13F 整合", '
+                '"supporting_signals": ["Composite Q=90", "Berkshire NEW position"], '
+                '"risk_signals": ["Recency Bias"], '
+                '"counter_view": "Burry はマクロ警戒中", '
+                '"lens_views": {'
+                '"Buffett_Munger": "質×価値良好", '
+                '"Burry": "テールリスク懸念", '
+                '"Lynch": "消費者目線で堅調"}, '
+                '"confidence": 0.72}'
+            )
+
+        class _U:
+            input_tokens = 1200
+            output_tokens = 350
+            cache_read_input_tokens = 800
+
+        class _R:
+            content = [_C()]
+            usage = _U()
+
+        return _R()
+
+    @pytest.mark.unit
+    def test_正常系_RankingResult_返却(
+        self, make_bundle: Any, good_response: Any
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import (
+            RankingResult,
+            rank_single_with_claude,
+        )
+
+        client = MagicMock()
+        client.messages.create.return_value = good_response
+        result = rank_single_with_claude(
+            make_bundle(regime="Bull"), anthropic_client=client
+        )
+        assert isinstance(result, RankingResult)
+        assert result.ranking_score == 78
+        # Bull → 補正なし（等倍）
+        assert result.confidence_adjusted == result.confidence
+        # 50-79 → Quarter Kelly
+        assert result.kelly_multiplier == Decimal("0.5")
+        assert result.fallback_reason is None
+
+    @pytest.mark.unit
+    def test_Crisis_時_confidence_adjusted_半減(
+        self, make_bundle: Any, good_response: Any
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import rank_single_with_claude
+
+        client = MagicMock()
+        client.messages.create.return_value = good_response
+        result = rank_single_with_claude(
+            make_bundle(regime="Crisis"), anthropic_client=client
+        )
+        assert result.confidence_adjusted == result.confidence * Decimal("0.5")
+
+    @pytest.mark.unit
+    def test_API_例外時_Composite_埋め_fallback(self, make_bundle: Any) -> None:
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import rank_single_with_claude
+
+        client = MagicMock()
+        client.messages.create.side_effect = Exception("API error")
+        result = rank_single_with_claude(
+            make_bundle(composite_score=72.5), anthropic_client=client
+        )
+        assert result.fallback_reason is not None
+        assert "api_error" in result.fallback_reason
+        # composite_score を int 化
+        assert result.ranking_score == 72
+
+    @pytest.mark.unit
+    def test_一本線予測検出時_forbidden_pattern_fallback(
+        self, make_bundle: Any
+    ) -> None:
+        """Sonnet が誤って予測値を出した場合、fallback_reason が立つ。"""
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import rank_single_with_claude
+
+        class _C:
+            text = (
+                '{"ranking_score": 80, '
+                '"recommendation_summary": "AAPL は $200 になる", '
+                '"supporting_signals": ["x"], '
+                '"risk_signals": ["y"], '
+                '"counter_view": "test", '
+                '"lens_views": {'
+                '"Buffett_Munger": "x", '
+                '"Burry": "y", '
+                '"Lynch": "z"}, '
+                '"confidence": 0.5}'
+            )
+
+        class _U:
+            input_tokens = 100
+            output_tokens = 100
+            cache_read_input_tokens = 0
+
+        class _R:
+            content = [_C()]
+            usage = _U()
+
+        client = MagicMock()
+        client.messages.create.return_value = _R()
+        result = rank_single_with_claude(make_bundle(), anthropic_client=client)
+        assert result.fallback_reason == "forbidden_pattern_detected"
+
+    @pytest.mark.unit
+    def test_schema_error_時_fallback(self, make_bundle: Any) -> None:
+        """Sonnet が valid JSON だが Pydantic 制約違反を返した場合、
+
+        ``schema_error:`` で始まる fallback_reason が立つこと。
+        ここでは ``ranking_score=999`` (0-100 範囲外) を返させて
+        ValidationError を意図的に発生させる。``_extract_json`` が
+        ValueError を出すケースは api_error path で捕捉されるため、
+        schema_error path 単独の発火を担保するには valid JSON が必要。
+        """
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import rank_single_with_claude
+
+        class _C:
+            text = (
+                '{"ranking_score": 999, '
+                '"recommendation_summary": "out of range", '
+                '"supporting_signals": ["x"], '
+                '"risk_signals": ["y"], '
+                '"counter_view": "test", '
+                '"lens_views": {'
+                '"Buffett_Munger": "x", '
+                '"Burry": "y", '
+                '"Lynch": "z"}, '
+                '"confidence": 0.5}'
+            )
+
+        class _U:
+            input_tokens = 100
+            output_tokens = 100
+            cache_read_input_tokens = 0
+
+        class _R:
+            content = [_C()]
+            usage = _U()
+
+        client = MagicMock()
+        client.messages.create.return_value = _R()
+        result = rank_single_with_claude(make_bundle(), anthropic_client=client)
+        assert result.fallback_reason is not None
+        assert result.fallback_reason.startswith("schema_error:")
+
+    @pytest.mark.unit
+    def test_bundle_hash_決定論性(self, make_bundle: Any) -> None:
+        """同一 bundle を 2 回 hash して文字列完全一致（Provenance/cache key 用）。"""
+        from src.analysis.ranking_judge import _compute_bundle_hash
+
+        bundle = make_bundle()
+        hash1 = _compute_bundle_hash(bundle)
+        hash2 = _compute_bundle_hash(bundle)
+        assert hash1 == hash2
+        # SHA256 hex = 64 文字
+        assert len(hash1) == 64

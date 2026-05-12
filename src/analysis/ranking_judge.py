@@ -12,12 +12,14 @@ Provenance §9.8.2 準拠の RankingMetadata を全結果に付与。
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone  # noqa: F401 — timezone は将来 _build_metadata で使用
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -634,3 +636,244 @@ def build_ranking_user_message(bundle: RankingSignalBundle) -> str:
         f"(Bull={bull_p}, Choppy={choppy_p}, Crisis={crisis_p})\n\n"
         f"上記シグナル束を統合し、スキーマに従った JSON で判定結果を返してください。"
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers — JSON 抽出 / bundle hash / 縮退結果生成
+# ---------------------------------------------------------------------------
+
+
+def _extract_json(text: str) -> dict[str, Any]:
+    """応答テキストから JSON dict を抽出する。
+
+    抽出順序:
+        1. ``` ```json ... ``` ``` または ``` ``` ... ``` ``` のコードブロック
+        2. 最初の ``{`` から最後の ``}`` まで
+
+    sentiment.py の同名関数と同等実装（notes-5.2.md §2.1 参照、
+    Phase 6 で src/analysis/_common.py に統合予定）。
+
+    Raises:
+        ValueError: JSON が抽出できなかった場合。
+        json.JSONDecodeError: JSON 構文不正の場合。
+    """
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        return json.loads(fence.group(1))  # type: ignore[no-any-return]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("JSON not found in response")
+    return json.loads(text[start : end + 1])  # type: ignore[no-any-return]
+
+
+def _compute_bundle_hash(bundle: RankingSignalBundle) -> str:
+    """RankingSignalBundle の安定 SHA256 ハッシュを返す。
+
+    用途:
+        (a) Provenance §9.8.2 ``input_bundle_hash`` フィールド
+        (b) Task 5.2.8 24h キャッシュキー
+
+    Decimal / None / dict をすべて文字列化し ``json.dumps(sort_keys=True)``
+    で正規化することで、同じ意味の bundle に対し常に同じ hex を返す。
+    """
+    payload: dict[str, Any] = {
+        "ticker": bundle.ticker,
+        "exchange": bundle.exchange,
+        "composite_score": bundle.composite_score,
+        "sub_scores": bundle.sub_scores,
+        "composite_preset": bundle.composite_preset,
+        "magic_formula_score": bundle.magic_formula_score,
+        "roc_pct": str(bundle.roc_pct),
+        "earnings_yield_pct": str(bundle.earnings_yield_pct),
+        "momentum_1m": str(bundle.momentum_1m),
+        "momentum_12m": str(bundle.momentum_12m),
+        "sentiment_score": str(bundle.sentiment_score),
+        "polymarket_macro": {k: str(v) for k, v in bundle.polymarket_macro.items()},
+        "fund_holdings_delta": bundle.fund_holdings_delta,
+        "regime": bundle.regime,
+    }
+    serialized = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _build_fallback_result(
+    bundle: RankingSignalBundle,
+    *,
+    reason: str,
+    started_at: datetime,
+) -> RankingResult:
+    """PRD §FR5 多段縮退の核 — Sonnet 不在時に Composite Score で埋めた
+
+    :class:`RankingResult` を構築する。``fallback_reason`` に失敗理由を記録し、
+    ``lens_views`` は 3 キー固定 ``"(不在)"``、``confidence`` は floor 値
+    ``Decimal("0.3")`` を採用する。``apply_regime_confidence`` /
+    ``compute_kelly_multiplier`` は通常パスと同じく実行され、Stage 3 純粋
+    関数の出力契約を保つ。
+
+    Args:
+        bundle: 入力シグナル束（``composite_score`` を埋め値として利用）。
+        reason: 縮退理由文字列（``"api_error: ..."`` /
+            ``"schema_error: ..."`` / ``"forbidden_pattern_detected"``）。
+        started_at: 元の呼び出し開始時刻（UTC、Provenance 用）。
+
+    Returns:
+        埋め値で構築された :class:`RankingResult`。
+    """
+    score = int(bundle.composite_score)
+    return RankingResult(
+        ranking_score=score,
+        recommendation_summary=(
+            f"Claude 判定不可、Composite Score {score} で代替（{reason}）。"
+        ),
+        supporting_signals=(f"Composite={bundle.composite_score:.1f}",),
+        risk_signals=("Claude 判定取得失敗、数式スコアのみで判断中",),
+        counter_view=(
+            "Claude 不在のため反対意見生成不可。ユーザー自身で他根拠を確認推奨。"
+        ),
+        lens_views={
+            "Buffett_Munger": "(不在)",
+            "Burry": "(不在)",
+            "Lynch": "(不在)",
+        },
+        confidence=Decimal("0.3"),
+        confidence_adjusted=apply_regime_confidence(
+            Decimal("0.3"), regime=bundle.regime
+        ),
+        kelly_multiplier=compute_kelly_multiplier(score),
+        fallback_reason=reason,
+        metadata=RankingMetadata(
+            model="(fallback)",
+            model_version="(fallback)",
+            calculation_method="ranking_judge_v1_fallback",
+            input_bundle_hash=_compute_bundle_hash(bundle),
+            cache_hit=False,
+            cache_age_sec=None,
+            input_tokens=0,
+            output_tokens=0,
+            input_tokens_cached=0,
+            calculated_at=started_at,
+            academic_source=ACADEMIC_SOURCE,
+            code_commit=_get_current_git_commit(),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# rank_single_with_claude — Sonnet 4.6 ranking judge 本体（PRD §FR5 多段縮退）
+# ---------------------------------------------------------------------------
+
+
+def rank_single_with_claude(
+    bundle: RankingSignalBundle,
+    *,
+    anthropic_client: Any,
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> RankingResult:
+    """1 銘柄を Sonnet 4.6 でランキング判定する（PRD §FR2/§FR5）。
+
+    3 つの recovery path（PRD §FR5 多段縮退）で `RankingResult` を必ず返却:
+
+    1. **API 例外** (network / 401 / 429 / 503 / SDK error / JSON 抽出失敗):
+       ``_build_fallback_result(reason=f"api_error: {type(exc).__name__}")``
+    2. **Pydantic スキーマ違反** (未定義 extra / 範囲外 / 一本線予測フィールド):
+       ``_build_fallback_result(reason=f"schema_error: {type(exc).__name__}")``
+    3. **一本線予測パターン検出** (``validate_no_price_predictions`` 違反):
+       ``_build_fallback_result(reason="forbidden_pattern_detected")``
+
+    Prompt Caching API call (cache_control ephemeral、notes-5.2.md §1.3):
+        SYSTEM_PROMPT を ``cache_control: ephemeral`` で送り、5 分 TTL の
+        プロンプトキャッシュを利用する。``cache_read_input_tokens`` は SDK が
+        フィールドを省略する場合があるため ``getattr(... , 0) or 0`` で
+        安全に取得する。
+
+    ``confidence_adjusted`` と ``kelly_multiplier`` は Sonnet 出力からではなく
+    呼び出し側 Python で Stage 3 純粋関数（``apply_regime_confidence`` /
+    ``compute_kelly_multiplier``）から計算する（SYSTEM_PROMPT 契約と整合）。
+
+    Args:
+        bundle: 入力シグナル束（PRD §FR2 で定義された 6 skill 統合）。
+        anthropic_client: ``anthropic.Anthropic`` 互換クライアント（DI）。
+        model: Sonnet モデル ID（既定 :data:`DEFAULT_MODEL`）。
+        max_tokens: 出力上限トークン数（既定 :data:`DEFAULT_MAX_TOKENS`）。
+
+    Returns:
+        :class:`RankingResult` — 正常時は Sonnet 判定、失敗時は Composite Score
+        埋め値で fallback_reason を立てて返す。
+    """
+    started_at = datetime.now(UTC)
+    user_msg = build_ranking_user_message(bundle)
+
+    # Path 1: API 呼び出し + JSON 抽出 — 例外は api_error にまとめる
+    try:
+        response = anthropic_client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[
+                {
+                    "type": "text",
+                    "text": SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        text = response.content[0].text
+        parsed = _extract_json(text)
+    except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退、Anthropic SDK の多様な例外型を一括受け
+        return _build_fallback_result(
+            bundle,
+            reason=f"api_error: {type(exc).__name__}",
+            started_at=started_at,
+        )
+
+    # Provenance §9.8.2 メタデータを構築（cache_read_input_tokens は省略され得る）
+    raw_metadata = RankingMetadata(
+        model=model,
+        model_version=DEFAULT_MODEL_VERSION,
+        calculation_method="ranking_judge_v1",
+        input_bundle_hash=_compute_bundle_hash(bundle),
+        cache_hit=False,
+        cache_age_sec=None,
+        input_tokens=getattr(response.usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(response.usage, "output_tokens", 0) or 0,
+        input_tokens_cached=(
+            getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        ),
+        calculated_at=started_at,
+        academic_source=ACADEMIC_SOURCE,
+        code_commit=_get_current_git_commit(),
+    )
+
+    # Path 2: Pydantic 検証 — extra='forbid' / 範囲制約 / 予測フィールド reject
+    try:
+        confidence = Decimal(str(parsed.pop("confidence", 0)))
+        result = RankingResult(
+            **parsed,
+            confidence=confidence,
+            confidence_adjusted=apply_regime_confidence(
+                confidence, regime=bundle.regime
+            ),
+            kelly_multiplier=compute_kelly_multiplier(parsed.get("ranking_score", 0)),
+            fallback_reason=None,
+            metadata=raw_metadata,
+        )
+    except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退、ValidationError 等を一括受け
+        return _build_fallback_result(
+            bundle,
+            reason=f"schema_error: {type(exc).__name__}",
+            started_at=started_at,
+        )
+
+    # Path 3: 自由文中の一本線予測パターンスキャン（CLAUDE.md §9.3 三層目）
+    try:
+        validate_no_price_predictions(result)
+    except ValueError:
+        return _build_fallback_result(
+            bundle,
+            reason="forbidden_pattern_detected",
+            started_at=started_at,
+        )
+
+    return result
