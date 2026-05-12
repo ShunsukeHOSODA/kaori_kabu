@@ -7,12 +7,17 @@ from decimal import Decimal
 
 import pytest
 
+# モジュールレベルの sentinel — kwarg 既定値で「未指定」を判定するために使う。
+# None を渡せるフィールド（sector）と区別するため別 sentinel を使用する。
+_unset: object = object()
+
 
 @pytest.fixture
 def make_bundle() -> Callable[..., object]:
     """RankingSignalBundle の標準 fixture。
 
-    ticker / regime / composite_score を可変に指定可能。他のフィールドは
+    ticker / regime / composite_score / sector / polymarket_macro /
+    fund_holdings_delta を可変に指定可能。他のフィールドは
     Bull regime + Tech sector + Magic Formula 高スコアのデフォルト値で固定。
 
     Returns:
@@ -24,11 +29,14 @@ def make_bundle() -> Callable[..., object]:
         ticker: str = "AAPL",
         regime: str = "Bull",
         composite_score: float = 72.5,
+        sector: object = _unset,
+        polymarket_macro: object = _unset,
+        fund_holdings_delta: object = _unset,
     ) -> object:
         return RankingSignalBundle(
             ticker=ticker,
             exchange="US",
-            sector="Technology",
+            sector="Technology" if sector is _unset else sector,  # type: ignore[arg-type]
             composite_score=composite_score,
             sub_scores={"Q": 90, "V": 50, "I": 30, "G": 60, "R": 80, "M": 70, "S": 55},
             composite_preset="Buffett_型_暫定",
@@ -40,10 +48,16 @@ def make_bundle() -> Callable[..., object]:
             sentiment_score=Decimal("0.4"),
             sentiment_confidence=Decimal("0.7"),
             sentiment_themes=("iPhone 出荷",),
-            polymarket_macro={"fed_cut_2026": Decimal("0.62")},
-            fund_holdings_delta={
-                "Berkshire": {"action": "NEW", "value_change_usd": 5_200_000_000}
-            },
+            polymarket_macro=(
+                {"fed_cut_2026": Decimal("0.62")}
+                if polymarket_macro is _unset
+                else polymarket_macro  # type: ignore[arg-type]
+            ),
+            fund_holdings_delta=(
+                {"Berkshire": {"action": "NEW", "value_change_usd": 5_200_000_000}}
+                if fund_holdings_delta is _unset
+                else fund_holdings_delta  # type: ignore[arg-type]
+            ),
             regime=regime,  # type: ignore[arg-type]
             regime_state_probs={
                 "Bull": Decimal("0.6"),

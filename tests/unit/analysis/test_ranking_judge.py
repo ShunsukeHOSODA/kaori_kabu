@@ -531,3 +531,194 @@ class TestSystemPrompt:
         assert "confidence_adjusted" in SYSTEM_PROMPT
         assert "kelly_multiplier" in SYSTEM_PROMPT
         assert "metadata" in SYSTEM_PROMPT
+
+
+class TestBuildRankingUserMessage:
+    """Task 5.2.6 — build_ranking_user_message の TDD テスト。
+
+    RankingSignalBundle を Sonnet 4.6 用の markdown 化された user message に
+    変換する純粋関数。Prompt Caching の cache_control 境界でのヒット率を
+    最大化するため、同入力 → byte-identical な決定論的出力を保証する。
+
+    検証観点:
+        - 必須セクション 9 種すべての markdown 包含
+        - ticker / sector / regime の動的反映
+        - None / 空 dict / 空 tuple の placeholder 文言
+        - 決定論性（同 bundle 2 回呼び出しで文字列完全一致）
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "must_include",
+        [
+            "AAPL",
+            "Composite Score",
+            "Magic Formula",
+            "Polymarket",
+            "13F",
+            "Regime",
+            "Bull",
+            "ニュースセンチメント",
+            "モメンタム",
+        ],
+    )
+    def test_必須セクション全て含まれる(
+        self, make_bundle: Any, must_include: str
+    ) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(make_bundle())
+        assert must_include in msg, f"missing: {must_include}"
+
+    @pytest.mark.unit
+    def test_ticker_セクター_反映(self, make_bundle: Any) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(make_bundle(ticker="MSFT"))
+        assert "MSFT" in msg
+        assert "Technology" in msg
+
+    @pytest.mark.unit
+    def test_sector_None_は不明表示(self, make_bundle: Any) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(make_bundle(sector=None))
+        assert "不明" in msg
+        # "Technology" は登場しないこと（None で置換されたため）
+        assert "Technology" not in msg
+
+    @pytest.mark.unit
+    def test_polymarket_空辞書_placeholder(self, make_bundle: Any) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(make_bundle(polymarket_macro={}))
+        assert "(データなし)" in msg
+
+    @pytest.mark.unit
+    def test_13F_空辞書_placeholder(self, make_bundle: Any) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(make_bundle(fund_holdings_delta={}))
+        assert "(差分なし)" in msg
+
+    @pytest.mark.unit
+    def test_Crisis_regime_反映(self, make_bundle: Any) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(make_bundle(regime="Crisis"))
+        assert "Crisis" in msg
+
+    @pytest.mark.unit
+    def test_決定論性_同じ入力で同じ出力(self, make_bundle: Any) -> None:
+        """Prompt Caching ヒット率最大化の根拠 — 同 bundle で完全一致。"""
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        bundle = make_bundle()
+        msg1 = build_ranking_user_message(bundle)
+        msg2 = build_ranking_user_message(bundle)
+        assert msg1 == msg2
+
+    @pytest.mark.unit
+    def test_13F_value_change_メガドル換算(self, make_bundle: Any) -> None:
+        """fund_holdings_delta の value_change_usd は ${value/1e6:.1f}M で表示。"""
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(
+            make_bundle(
+                fund_holdings_delta={
+                    "Pabrai": {"action": "ADD", "value_change_usd": 1_500_000_000}
+                }
+            )
+        )
+        assert "Pabrai" in msg
+        assert "ADD" in msg
+        assert "$1500.0M" in msg or "1500.0M" in msg
+
+    @pytest.mark.unit
+    def test_polymarket_確率_パーセント表示(self, make_bundle: Any) -> None:
+        from src.analysis.ranking_judge import build_ranking_user_message
+
+        msg = build_ranking_user_message(
+            make_bundle(polymarket_macro={"recession_2026": Decimal("0.35")})
+        )
+        assert "recession_2026" in msg
+        assert "35.0%" in msg
+
+    @pytest.mark.unit
+    def test_sentiment_themes_空タプル_placeholder(self) -> None:
+        """sentiment_themes が空タプルなら '(なし)' が出ること。
+
+        fixture が固定で themes を埋めるため、bundle を直接生成。
+        """
+        from src.analysis.ranking_judge import (
+            RankingSignalBundle,
+            build_ranking_user_message,
+        )
+
+        bundle = RankingSignalBundle(
+            ticker="AAPL",
+            exchange="US",
+            sector="Technology",
+            composite_score=70.0,
+            sub_scores={"Q": 80, "V": 50, "I": 30, "G": 60, "R": 70, "M": 60, "S": 50},
+            composite_preset="Buffett_型_暫定",
+            magic_formula_score=80.0,
+            roc_pct=Decimal("25.0"),
+            earnings_yield_pct=Decimal("7.0"),
+            momentum_1m=Decimal("2.0"),
+            momentum_12m=Decimal("20.0"),
+            sentiment_score=Decimal("0.3"),
+            sentiment_confidence=Decimal("0.6"),
+            sentiment_themes=(),  # 空タプル
+            polymarket_macro={"fed_cut_2026": Decimal("0.5")},
+            fund_holdings_delta={
+                "Berkshire": {"action": "NEW", "value_change_usd": 1_000_000_000}
+            },
+            regime="Bull",
+            regime_state_probs={
+                "Bull": Decimal("0.6"),
+                "Choppy": Decimal("0.3"),
+                "Crisis": Decimal("0.1"),
+            },
+            fetched_at=datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
+        )
+        msg = build_ranking_user_message(bundle)
+        assert "(なし)" in msg
+
+    @pytest.mark.unit
+    def test_None_フィールド_NA_表示(self) -> None:
+        """magic_formula_score / roc / EY / momentum が None なら 'N/A'。"""
+        from src.analysis.ranking_judge import (
+            RankingSignalBundle,
+            build_ranking_user_message,
+        )
+
+        bundle = RankingSignalBundle(
+            ticker="AAPL",
+            exchange="US",
+            sector="Technology",
+            composite_score=70.0,
+            sub_scores={"Q": 80, "V": 50, "I": 30, "G": 60, "R": 70, "M": 60, "S": 50},
+            composite_preset="Buffett_型_暫定",
+            magic_formula_score=None,
+            roc_pct=None,
+            earnings_yield_pct=None,
+            momentum_1m=None,
+            momentum_12m=None,
+            sentiment_score=Decimal("0.3"),
+            sentiment_confidence=Decimal("0.6"),
+            sentiment_themes=("iPhone 出荷",),
+            polymarket_macro={"fed_cut_2026": Decimal("0.5")},
+            fund_holdings_delta={
+                "Berkshire": {"action": "NEW", "value_change_usd": 1_000_000_000}
+            },
+            regime="Bull",
+            regime_state_probs={
+                "Bull": Decimal("0.6"),
+                "Choppy": Decimal("0.3"),
+                "Crisis": Decimal("0.1"),
+            },
+            fetched_at=datetime(2026, 5, 12, 10, 0, 0, tzinfo=UTC),
+        )
+        msg = build_ranking_user_message(bundle)
+        assert "N/A" in msg

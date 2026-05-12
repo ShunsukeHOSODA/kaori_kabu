@@ -487,3 +487,136 @@ def compute_kelly_multiplier(ranking_score: int) -> Decimal:
     if ranking_score >= 50:
         return Decimal("0.5")
     return Decimal("0.0")
+
+
+# ---------------------------------------------------------------------------
+# build_ranking_user_message — Sonnet 4.6 user message builder
+# (Prompt Caching 安定化のため markdown 構造を決定論的に固定)
+#
+# Anthropic Prompt Caching の cache_control 境界では、同入力 → byte-identical
+# な user message が必須。本関数は RankingSignalBundle の値順序・小数点桁数・
+# placeholder 文言をすべて固定し、同 bundle で 2 回呼ぶと str 完全一致する。
+#
+# 型安全な fund_holdings_delta 処理:
+#     bundle.fund_holdings_delta は dict[str, dict[str, object]] のため、
+#     value_change_usd は object 型で返る。isinstance(int, float) ガードで
+#     float キャストの安全性を確保する。
+# ---------------------------------------------------------------------------
+
+
+def _format_holdings(holdings: dict[str, dict[str, object]]) -> str:
+    """13F 直近 1Q 差分辞書を markdown 化する（空時は placeholder 1 行）。
+
+    Args:
+        holdings: ``{fund_name: {"action": str, "value_change_usd": number}}``
+
+    Returns:
+        ``- {fund}: {action} (Δ ${value_m:.1f}M)`` を行頭 ``-`` で連結した
+        markdown。``holdings`` が空辞書なら ``"- (差分なし)"`` を返す。
+    """
+    if not holdings:
+        return "- (差分なし)"
+    lines: list[str] = []
+    for fund, data in holdings.items():
+        action = str(data.get("action", "-"))
+        raw_value = data.get("value_change_usd", 0)
+        value_m = (
+            float(raw_value) / 1e6 if isinstance(raw_value, (int, float)) else 0.0
+        )
+        lines.append(f"- {fund}: {action} (Δ ${value_m:.1f}M)")
+    return "\n".join(lines)
+
+
+def _format_macro(macro: dict[str, Decimal]) -> str:
+    """Polymarket マクロ確率辞書を markdown 化する（空時は placeholder 1 行）。
+
+    Args:
+        macro: ``{event_key: Decimal(0.0-1.0)}`` の確率辞書。
+
+    Returns:
+        ``- {key}: {value*100:.1f}%`` を行頭 ``-`` で連結した markdown。
+        ``macro`` が空辞書なら ``"- (データなし)"`` を返す。
+    """
+    if not macro:
+        return "- (データなし)"
+    return "\n".join(f"- {k}: {float(v) * 100:.1f}%" for k, v in macro.items())
+
+
+def _format_optional(value: object) -> str:
+    """``None`` を ``"N/A"`` に置換した文字列を返す（その他は ``str()``）。"""
+    if value is None:
+        return "N/A"
+    return str(value)
+
+
+def build_ranking_user_message(bundle: RankingSignalBundle) -> str:
+    """RankingSignalBundle を Sonnet 4.6 用の user message に変換する純粋関数。
+
+    Anthropic Prompt Caching (ephemeral) のヒット率最大化のため、markdown 構造・
+    値順序・小数点桁数・placeholder 文言をすべて決定論的に固定する。同 bundle
+    で 2 回呼ぶと str が byte-identical に一致する。
+
+    セクション構成（PRD §FR2 / design.md line 630-689 整合）:
+        1. ヘッダ: ``## 銘柄: {ticker} ({exchange}) / セクター: {sector|'不明'}``
+        2. ``### Composite Score`` — composite + preset + 7 軸サブスコア
+        3. ``### Magic Formula`` — score / ROC / EY (None → 'N/A')
+        4. ``### モメンタム`` — 1m / 12m (None → 'N/A')
+        5. ``### ニュースセンチメント`` — score / confidence / themes
+        6. ``### Polymarket マクロ織り込み確率`` — 確率 % リスト
+        7. ``### 13F 直近 1Q 差分`` — action + Δ$M リスト
+        8. ``### Regime`` — 現在 + Bull/Choppy/Crisis 状態確率
+        9. 末尾: JSON 返却の指示文
+
+    Args:
+        bundle: Stage 2 Sonnet 判定の入力シグナル束（frozen dataclass）。
+
+    Returns:
+        Sonnet 4.6 の user message として渡す markdown 文字列。
+    """
+    sector_str = bundle.sector or "不明"
+    themes_str = ", ".join(bundle.sentiment_themes) or "(なし)"
+    holdings_md = _format_holdings(bundle.fund_holdings_delta)
+    macro_md = _format_macro(bundle.polymarket_macro)
+
+    mf_score = _format_optional(bundle.magic_formula_score)
+    roc = _format_optional(bundle.roc_pct)
+    ey = _format_optional(bundle.earnings_yield_pct)
+    mom_1m = _format_optional(bundle.momentum_1m)
+    mom_12m = _format_optional(bundle.momentum_12m)
+
+    sub = bundle.sub_scores
+    bull_p = bundle.regime_state_probs.get("Bull", Decimal("0"))
+    choppy_p = bundle.regime_state_probs.get("Choppy", Decimal("0"))
+    crisis_p = bundle.regime_state_probs.get("Crisis", Decimal("0"))
+
+    return (
+        f"## 銘柄: {bundle.ticker} ({bundle.exchange}) / "
+        f"セクター: {sector_str}\n\n"
+        f"### Composite Score\n"
+        f"- Composite: {bundle.composite_score:.1f}/100 "
+        f"(preset: {bundle.composite_preset})\n"
+        f"- 7 軸サブスコア: "
+        f"Q={sub.get('Q', 0):.0f}, "
+        f"V={sub.get('V', 0):.0f}, "
+        f"I={sub.get('I', 0):.0f}, "
+        f"G={sub.get('G', 0):.0f}, "
+        f"R={sub.get('R', 0):.0f}, "
+        f"M={sub.get('M', 0):.0f}, "
+        f"S={sub.get('S', 0):.0f}\n\n"
+        f"### Magic Formula\n"
+        f"- スコア: {mf_score} / ROC: {roc} / EY: {ey}\n\n"
+        f"### モメンタム\n"
+        f"- 1m: {mom_1m} / 12m: {mom_12m}\n\n"
+        f"### ニュースセンチメント (Haiku 4.5 既存)\n"
+        f"- Score: {bundle.sentiment_score} / "
+        f"Confidence: {bundle.sentiment_confidence}\n"
+        f"- テーマ: {themes_str}\n\n"
+        f"### Polymarket マクロ織り込み確率\n"
+        f"{macro_md}\n\n"
+        f"### 13F 直近 1Q 差分 (スマートマネー動向)\n"
+        f"{holdings_md}\n\n"
+        f"### Regime\n"
+        f"- 現在: {bundle.regime} "
+        f"(Bull={bull_p}, Choppy={choppy_p}, Crisis={crisis_p})\n\n"
+        f"上記シグナル束を統合し、スキーマに従った JSON で判定結果を返してください。"
+    )
