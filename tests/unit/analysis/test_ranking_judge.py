@@ -424,3 +424,113 @@ class TestComputeKellyMultiplier:
         from src.analysis.ranking_judge import compute_kelly_multiplier
 
         assert compute_kelly_multiplier(score) == expected
+
+
+class TestSystemPrompt:
+    """Task 5.2.5 — SYSTEM_PROMPT 定数の TDD テスト。
+
+    Sonnet 4.6 ranking judge 用のシステムプロンプトが、
+    Anthropic Prompt Caching（ephemeral）の 2,048 token 下限を確実に
+    超える文字数を持ち、PRD §FR2/§FR3 の必須要素・禁止事項を
+    すべて言及していることを検証する。
+
+    char 数下限 2,400 は Japanese 混在テキストでの token 換算の
+    安全側 proxy（Claude tokenizer で 1 token ≈ 1.0-1.5 char）。
+    """
+
+    @pytest.mark.unit
+    def test_存在と非空(self) -> None:
+        from src.analysis.ranking_judge import SYSTEM_PROMPT
+
+        assert isinstance(SYSTEM_PROMPT, str)
+        assert len(SYSTEM_PROMPT) > 0
+
+    @pytest.mark.unit
+    def test_文字数下限_2400(self) -> None:
+        """Prompt Caching 2,048 token 下限の char proxy（≥ 2,400）。
+
+        Japanese 混在テキストにおける Claude tokenizer の
+        実効レートを考慮した安全側下限。
+        """
+        from src.analysis.ranking_judge import SYSTEM_PROMPT
+
+        assert len(SYSTEM_PROMPT) >= 2400, (
+            f"SYSTEM_PROMPT char count={len(SYSTEM_PROMPT)}, "
+            "Prompt Caching 2048 token 下限を満たさない可能性"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "keyword",
+        [
+            # lens_views 3 キー固定（PRD §FR2 line 136）
+            "Buffett_Munger",
+            "Burry",
+            "Lynch",
+            # 学術根拠 4 件
+            "Greenblatt",
+            "Tetlock",
+            "Schroeder",
+            "Pabrai",
+            # リスク警告 3 件
+            "Value Trap",
+            "Recency Bias",
+            "Overconfidence",
+            # 出力スキーマ必須フィールド
+            "counter_view",
+            "ranking_score",
+            "lens_views",
+            "confidence",
+        ],
+    )
+    def test_必須キーワード(self, keyword: str) -> None:
+        from src.analysis.ranking_judge import SYSTEM_PROMPT
+
+        assert keyword in SYSTEM_PROMPT, (
+            f"必須キーワード '{keyword}' が SYSTEM_PROMPT に未記載"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "forbidden_topic",
+        [
+            "目標株価",
+            "上昇率",
+            "期限付き",
+            "投資助言",
+            "$",
+        ],
+    )
+    def test_禁止事項_明示(self, forbidden_topic: str) -> None:
+        """PRD §FR3 禁止 5 種が prompt 本文に明示されていること。
+
+        単純な `in` チェックでよい（禁止語が「禁止」コンテキスト下で
+        参照されていることを SYSTEM_PROMPT 設計者責任で担保）。
+        """
+        from src.analysis.ranking_judge import SYSTEM_PROMPT
+
+        assert forbidden_topic in SYSTEM_PROMPT, (
+            f"禁止事項 '{forbidden_topic}' が SYSTEM_PROMPT に未記載"
+        )
+
+    @pytest.mark.unit
+    def test_禁止コンテキスト言及(self) -> None:
+        """SYSTEM_PROMPT に「禁止」または「❌」が含まれていること。
+
+        パラメトライズした禁止事項が「禁止」文脈下で言及されている
+        ことを担保する最低限のシグナル検査。
+        """
+        from src.analysis.ranking_judge import SYSTEM_PROMPT
+
+        assert "禁止" in SYSTEM_PROMPT or "❌" in SYSTEM_PROMPT
+
+    @pytest.mark.unit
+    def test_計算側除外フィールドの明記(self) -> None:
+        """confidence_adjusted / kelly_multiplier / metadata は呼び出し側で
+        計算するため Sonnet 出力 JSON に含めない旨を SYSTEM_PROMPT で明記。
+        """
+        from src.analysis.ranking_judge import SYSTEM_PROMPT
+
+        assert "confidence_adjusted" in SYSTEM_PROMPT
+        assert "kelly_multiplier" in SYSTEM_PROMPT
+        assert "metadata" in SYSTEM_PROMPT
