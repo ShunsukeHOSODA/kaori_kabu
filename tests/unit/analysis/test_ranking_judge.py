@@ -782,34 +782,7 @@ class TestRankSingleWithClaude:
     を保証する。失敗理由は `fallback_reason` で UI 側に明示される。
     """
 
-    @pytest.fixture
-    def good_response(self) -> Any:
-        """Sonnet 4.6 が返す正常 JSON response の MagicMock 互換オブジェクト。"""
-
-        class _C:
-            text = (
-                '{"ranking_score": 78, '
-                '"recommendation_summary": "Composite 高 + 13F 整合", '
-                '"supporting_signals": ["Composite Q=90", "Berkshire NEW position"], '
-                '"risk_signals": ["Recency Bias"], '
-                '"counter_view": "Burry はマクロ警戒中", '
-                '"lens_views": {'
-                '"Buffett_Munger": "質×価値良好", '
-                '"Burry": "テールリスク懸念", '
-                '"Lynch": "消費者目線で堅調"}, '
-                '"confidence": 0.72}'
-            )
-
-        class _U:
-            input_tokens = 1200
-            output_tokens = 350
-            cache_read_input_tokens = 800
-
-        class _R:
-            content = [_C()]
-            usage = _U()
-
-        return _R()
+    # ``good_response`` fixture は conftest.py に集約済み（Task 5.2.8 で共通化）。
 
     @pytest.mark.unit
     def test_正常系_RankingResult_返却(
@@ -957,3 +930,103 @@ class TestRankSingleWithClaude:
         assert hash1 == hash2
         # SHA256 hex = 64 文字
         assert len(hash1) == 64
+
+
+class TestRankWithClaudeBatch:
+    """Task 5.2.8 — rank_with_claude_batch + 24h キャッシュ I/O の TDD テスト。
+
+    PRD §FR6 (シグナル別キャッシュ + Sonnet 24h):
+        - キャッシュヒット → API 呼び出し抑制 + metadata.cache_hit=True
+        - キャッシュミス → API 呼び出し + 結果書き込み（fallback は書き込まない）
+        - TTL 超過（24h 超） → 再 API 呼び出し
+    """
+
+    @pytest.mark.unit
+    def test_キャッシュヒット時に_API_呼び出ししない(
+        self, tmp_path: Any, make_bundle: Any, good_response: Any
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import rank_with_claude_batch
+
+        client = MagicMock()
+        client.messages.create.return_value = good_response
+        bundles = [make_bundle()]
+
+        r1 = rank_with_claude_batch(
+            bundles, anthropic_client=client, cache_dir=tmp_path
+        )
+        assert client.messages.create.call_count == 1
+        assert r1[0].metadata.cache_hit is False
+
+        r2 = rank_with_claude_batch(
+            bundles, anthropic_client=client, cache_dir=tmp_path
+        )
+        # API 呼び出し回数は増えない（キャッシュヒット）
+        assert client.messages.create.call_count == 1
+        assert r2[0].metadata.cache_hit is True
+        assert r2[0].metadata.cache_age_sec is not None
+        # 結果の本体は同等（ranking_score / supporting_signals / etc.）
+        assert r2[0].ranking_score == r1[0].ranking_score
+        assert r2[0].supporting_signals == r1[0].supporting_signals
+
+    @pytest.mark.unit
+    def test_TTL_超過なら_再呼び出し(
+        self,
+        tmp_path: Any,
+        make_bundle: Any,
+        good_response: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from datetime import timedelta
+        from unittest.mock import MagicMock
+
+        from src.analysis import ranking_judge as rj
+
+        client = MagicMock()
+        client.messages.create.return_value = good_response
+        bundles = [make_bundle()]
+
+        # 1 回目: API 呼び出し + キャッシュ書き込み
+        rj.rank_with_claude_batch(
+            bundles, anthropic_client=client, cache_dir=tmp_path
+        )
+        assert client.messages.create.call_count == 1
+
+        # 25h 後の世界に時計を進める → TTL (24h) 超過扱い
+        future = datetime.now(UTC) + timedelta(hours=25)
+        monkeypatch.setattr(rj, "_now_utc", lambda: future)
+
+        rj.rank_with_claude_batch(
+            bundles, anthropic_client=client, cache_dir=tmp_path
+        )
+        # 再 API 呼び出しが発生する
+        assert client.messages.create.call_count == 2
+
+    @pytest.mark.unit
+    def test_fallback_時はキャッシュ書き込みしない(
+        self, tmp_path: Any, make_bundle: Any
+    ) -> None:
+        """API 例外で fallback_reason が立った結果はキャッシュしない。
+
+        次回呼び出しで再度 API を試す（一時的失敗の救済）。
+        """
+        from unittest.mock import MagicMock
+
+        from src.analysis.ranking_judge import rank_with_claude_batch
+
+        client = MagicMock()
+        client.messages.create.side_effect = Exception("Transient API error")
+        bundles = [make_bundle()]
+
+        r1 = rank_with_claude_batch(
+            bundles, anthropic_client=client, cache_dir=tmp_path
+        )
+        assert r1[0].fallback_reason is not None
+        assert client.messages.create.call_count == 1
+
+        # 2 回目も API が呼ばれる（fallback はキャッシュされない）
+        rank_with_claude_batch(
+            bundles, anthropic_client=client, cache_dir=tmp_path
+        )
+        assert client.messages.create.call_count == 2

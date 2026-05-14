@@ -4,9 +4,43 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
+
+
+@pytest.fixture
+def good_response() -> Any:
+    """Sonnet 4.6 が返す正常 JSON response の MagicMock 互換オブジェクト。
+
+    Task 5.2.7 / 5.2.8 共通 fixture（rank_single_with_claude /
+    rank_with_claude_batch 双方で使用）。
+    """
+
+    class _C:
+        text = (
+            '{"ranking_score": 78, '
+            '"recommendation_summary": "Composite 高 + 13F 整合", '
+            '"supporting_signals": ["Composite Q=90", "Berkshire NEW position"], '
+            '"risk_signals": ["Recency Bias"], '
+            '"counter_view": "Burry はマクロ警戒中", '
+            '"lens_views": {'
+            '"Buffett_Munger": "質×価値良好", '
+            '"Burry": "テールリスク懸念", '
+            '"Lynch": "消費者目線で堅調"}, '
+            '"confidence": 0.72}'
+        )
+
+    class _U:
+        input_tokens = 1200
+        output_tokens = 350
+        cache_read_input_tokens = 800
+
+    class _R:
+        content = [_C()]
+        usage = _U()
+
+    return _R()
 
 
 # モジュールレベルの sentinel クラス -- kwarg 既定値で "未指定" を判定するために使う。

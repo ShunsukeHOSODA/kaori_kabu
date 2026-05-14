@@ -15,9 +15,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -36,6 +37,9 @@ ACADEMIC_SOURCE: Final[str] = (
     "Greenblatt 2010 + Tetlock 2007 + Schroeder & Posch 2024 + "
     "Pabrai Dhandho + Thorp 2006"
 )
+# PRD §FR6: Sonnet ranking judge 結果の 24h キャッシュ TTL（秒）。
+# mtime からの経過秒がこれを超えるとキャッシュ無効化、再判定が発生する。
+CACHE_TTL_SEC: Final[int] = 24 * 3600
 
 # ---------------------------------------------------------------------------
 # SYSTEM_PROMPT — Sonnet 4.6 ranking judge instruction
@@ -841,3 +845,141 @@ def rank_single_with_claude(
         )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# rank_with_claude_batch — 一括判定 + 24h キャッシュ I/O（PRD §FR6）
+# ---------------------------------------------------------------------------
+
+
+def _now_utc() -> datetime:
+    """現在時刻 (UTC) を返すテスト可能フック。
+
+    :func:`_read_cache` の TTL 判定で参照される。テストでは
+    ``monkeypatch.setattr(rj, "_now_utc", lambda: future)`` で
+    将来時刻を注入し、キャッシュ TTL 超過を再現する。
+    """
+    return datetime.now(UTC)
+
+
+def _cache_path(
+    cache_dir: Path,
+    bundle: RankingSignalBundle,
+    model_version: str,
+) -> Path:
+    """キャッシュファイルパスを bundle + model_version の SHA256 で決定論的に生成する。
+
+    キャッシュキー成分:
+        - ``ticker`` / ``composite_preset`` / ``regime``: 人間可読の判別子
+        - ``_compute_bundle_hash(bundle)``: 入力シグナル束 SHA256（§9.8.4 input_bundle_hash と同一）
+        - ``model_version``: モデル変更時に旧キャッシュを無効化
+
+    ファイル名は ``{ticker}_{key[:32]}.json``（ticker prefix でディスク走査時の可視性確保）。
+    """
+    key_src = (
+        f"{bundle.ticker}|{bundle.composite_preset}|{bundle.regime}|"
+        f"{_compute_bundle_hash(bundle)}|{model_version}"
+    )
+    key = hashlib.sha256(key_src.encode()).hexdigest()[:32]
+    return cache_dir / f"{bundle.ticker}_{key}.json"
+
+
+def _read_cache(cache_path: Path, *, ttl_sec: int) -> RankingResult | None:
+    """キャッシュファイルから :class:`RankingResult` を復元する。
+
+    ヒット条件: ファイル存在 + mtime からの経過秒 <= ``ttl_sec``。
+    復元時は ``metadata.cache_hit=True`` / ``cache_age_sec=int(age)`` で上書き。
+
+    Returns:
+        - 復元成功時: :class:`RankingResult`
+        - ファイル不在 / TTL 超過 / JSON 不正 / スキーマ不整合: ``None``
+
+    Note:
+        :func:`validate_no_price_predictions` は書き込み時点で検証済みのため
+        再実行しない（キャッシュ済 = 安全と見做す）。
+    """
+    if not cache_path.exists():
+        return None
+    stat = cache_path.stat()
+    mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+    age = (_now_utc() - mtime).total_seconds()
+    if age > ttl_sec:
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        md_dict = payload.pop("metadata")
+        md_dict["calculated_at"] = datetime.fromisoformat(md_dict["calculated_at"])
+        metadata = RankingMetadata(**md_dict)
+        metadata = replace(metadata, cache_hit=True, cache_age_sec=int(age))
+        # JSON 永続化で失われる Pydantic 側の型を復元
+        for k in ("confidence", "confidence_adjusted", "kelly_multiplier"):
+            payload[k] = Decimal(str(payload[k]))
+        payload["supporting_signals"] = tuple(payload["supporting_signals"])
+        payload["risk_signals"] = tuple(payload["risk_signals"])
+        return RankingResult(**payload, metadata=metadata)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        # 破損キャッシュは黙って無視（次回判定で再生成）。
+        return None
+
+
+def _write_cache(cache_path: Path, result: RankingResult) -> None:
+    """:class:`RankingResult` を JSON でディスクに永続化する。
+
+    ``metadata`` は ``@dataclass`` で Pydantic から見ると arbitrary type のため、
+    ``dataclasses.asdict`` で dict 化してから合成する。``datetime`` は ISO 8601
+    string に明示変換し、json.dumps の ``default=str`` 救済に依存しない。
+    """
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = result.model_dump(mode="json", exclude={"metadata"})
+    md_dict = asdict(result.metadata)
+    md_dict["calculated_at"] = result.metadata.calculated_at.isoformat()
+    payload["metadata"] = md_dict
+    cache_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def rank_with_claude_batch(
+    bundles: list[RankingSignalBundle],
+    *,
+    anthropic_client: Any,
+    cache_dir: Path,
+    model: str = DEFAULT_MODEL,
+    model_version: str = DEFAULT_MODEL_VERSION,
+    ttl_sec: int = CACHE_TTL_SEC,
+) -> list[RankingResult]:
+    """銘柄一括ランキング判定 — PRD §FR6 24h キャッシュ層 + §FR5 多段縮退付き。
+
+    各 bundle について:
+        1. ``_cache_path`` でキャッシュキーを算出
+        2. ``_read_cache`` でヒット判定（ヒット時はそのまま結果に追加）
+        3. ミス時は ``rank_single_with_claude`` を呼び出して判定
+        4. ``fallback_reason is None`` の場合のみ ``_write_cache`` で永続化
+           （PRD §FR5 多段縮退結果は一時的失敗扱い、次回呼び出しで再試行）
+
+    Args:
+        bundles: ランキング対象のシグナル束（順序保持）。
+        anthropic_client: Anthropic SDK クライアント（messages.create を持つ）。
+        cache_dir: キャッシュ JSON の保存先ディレクトリ（不在時は自動作成）。
+        model: モデル名（既定: ``DEFAULT_MODEL``）。
+        model_version: モデルバージョン（キャッシュキー成分にも使用、既定: ``DEFAULT_MODEL_VERSION``）。
+        ttl_sec: キャッシュ TTL 秒数（既定: ``CACHE_TTL_SEC`` = 24h）。
+
+    Returns:
+        :class:`RankingResult` の list（入力 bundles と順序対応）。
+    """
+    results: list[RankingResult] = []
+    for bundle in bundles:
+        cache_path = _cache_path(cache_dir, bundle, model_version)
+        cached = _read_cache(cache_path, ttl_sec=ttl_sec)
+        if cached is not None:
+            results.append(cached)
+            continue
+        result = rank_single_with_claude(
+            bundle, anthropic_client=anthropic_client, model=model
+        )
+        if result.fallback_reason is None:
+            _write_cache(cache_path, result)
+        results.append(result)
+    return results
