@@ -18,15 +18,15 @@ Claude Haiku 4.5 を選んだ理由:
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 import pandas as pd
+
+from analysis._common import extract_json
+from analysis._provenance import get_current_git_commit
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -135,49 +135,11 @@ def build_sentiment_user_message(news_df: pd.DataFrame, ticker: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# JSON 抽出
+# メタデータ構築
+#
+# JSON 抽出は :func:`analysis._common.extract_json`、git commit 取得は
+# :func:`analysis._provenance.get_current_git_commit` に集約済み。
 # ---------------------------------------------------------------------------
-
-
-def _extract_json(text: str) -> dict[str, Any]:
-    """応答テキストから JSON を抽出。
-
-    抽出順序:
-        1. ```` ```json ... ``` ```` または ```` ``` ... ``` ```` のコードブロック
-        2. 最初の ``{`` から最後の ``}`` まで
-    """
-    fence_pattern = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
-    match = fence_pattern.search(text)
-    if match:
-        return json.loads(match.group(1))
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("JSON not found in sentiment analysis response")
-    return json.loads(text[start : end + 1])
-
-
-# ---------------------------------------------------------------------------
-# Provenance ヘルパー
-# ---------------------------------------------------------------------------
-
-
-def _get_current_git_commit() -> str | None:
-    """現在の git commit short hash。失敗時は None。"""
-    try:
-        completed = subprocess.run(  # noqa: S603, S607 — 固定引数のみ
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
 
 
 def _build_metadata(
@@ -211,7 +173,7 @@ def _build_metadata(
             'Tetlock 2007 "Giving Content to Investor Sentiment" + '
             "Loughran-McDonald 2011"
         ),
-        code_commit=_get_current_git_commit(),
+        code_commit=get_current_git_commit(),
     )
 
 
@@ -261,7 +223,7 @@ def analyze_sentiment(
         messages=[{"role": "user", "content": user_msg}],
     )
     text = response.content[0].text
-    parsed = _extract_json(text)
+    parsed = extract_json(text, context="sentiment analysis response")
 
     return SentimentResult(
         sentiment_score=Decimal(str(parsed.get("sentiment_score", 0))),

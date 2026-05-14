@@ -15,13 +15,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from analysis._common import extract_json
+from analysis._provenance import get_current_git_commit
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -192,32 +194,6 @@ def contains_forbidden_pattern(text: str) -> bool:
         禁止パターンを 1 つ以上含む場合 True、含まない場合 False
     """
     return any(p.search(text) for p in FORBIDDEN_PATTERNS)
-
-
-# ---------------------------------------------------------------------------
-# Provenance ヘルパー
-# ---------------------------------------------------------------------------
-
-
-def _get_current_git_commit() -> str | None:
-    """現在の git commit short hash を返す。失敗時は None。
-
-    sentiment.py の同名関数と同等実装（notes-5.2.md §2.1 参照）。
-    Phase 6 で src/analysis/_common.py に統合予定。
-    """
-    try:
-        completed = subprocess.run(  # noqa: S603, S607 — 固定引数のみ
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
 
 
 # ---------------------------------------------------------------------------
@@ -639,32 +615,11 @@ def build_ranking_user_message(bundle: RankingSignalBundle) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Helpers — JSON 抽出 / bundle hash / 縮退結果生成
+# Helpers — bundle hash / 縮退結果生成
+#
+# JSON 抽出は :func:`analysis._common.extract_json`、git commit 取得は
+# :func:`analysis._provenance.get_current_git_commit` に集約済み。
 # ---------------------------------------------------------------------------
-
-
-def _extract_json(text: str) -> dict[str, Any]:
-    """応答テキストから JSON dict を抽出する。
-
-    抽出順序:
-        1. ``` ```json ... ``` ``` または ``` ``` ... ``` ``` のコードブロック
-        2. 最初の ``{`` から最後の ``}`` まで
-
-    sentiment.py の同名関数と同等実装（notes-5.2.md §2.1 参照、
-    Phase 6 で src/analysis/_common.py に統合予定）。
-
-    Raises:
-        ValueError: JSON が抽出できなかった場合。
-        json.JSONDecodeError: JSON 構文不正の場合。
-    """
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
-        return json.loads(fence.group(1))  # type: ignore[no-any-return]
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("JSON not found in ranking judge response")
-    return json.loads(text[start : end + 1])  # type: ignore[no-any-return]
 
 
 def _compute_bundle_hash(bundle: RankingSignalBundle) -> str:
@@ -761,7 +716,7 @@ def _build_fallback_result(
             input_tokens_cached=0,
             calculated_at=started_at,
             academic_source=ACADEMIC_SOURCE,
-            code_commit=_get_current_git_commit(),
+            code_commit=get_current_git_commit(),
         ),
     )
 
@@ -827,7 +782,7 @@ def rank_single_with_claude(
             messages=[{"role": "user", "content": user_msg}],
         )
         text = response.content[0].text
-        parsed = _extract_json(text)
+        parsed = extract_json(text, context="ranking judge response")
     except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退、Anthropic SDK の多様な例外型を一括受け
         return _build_fallback_result(
             bundle,
@@ -852,7 +807,7 @@ def rank_single_with_claude(
         ),
         calculated_at=started_at,
         academic_source=ACADEMIC_SOURCE,
-        code_commit=_get_current_git_commit(),
+        code_commit=get_current_git_commit(),
     )
 
     # Path 2: Pydantic 検証 — extra='forbid' / 範囲制約 / 予測フィールド reject
