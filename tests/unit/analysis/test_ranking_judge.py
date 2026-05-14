@@ -1030,3 +1030,84 @@ class TestRankWithClaudeBatch:
             bundles, anthropic_client=client, cache_dir=tmp_path
         )
         assert client.messages.create.call_count == 2
+
+    @pytest.mark.unit
+    def test_破損キャッシュは_miss扱いで再判定(
+        self,
+        tmp_path: Any,
+        make_bundle: Any,
+        good_response: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """code-review MEDIUM: 破損キャッシュ JSON は WARN ログ + miss 扱いで API 再呼び出し。
+
+        既存ファイルがあっても JSON parse 失敗時は ``_read_cache`` が ``None`` を
+        返し、``rank_with_claude_batch`` が再度 ``rank_single_with_claude`` を起動
+        してキャッシュを上書きする回復シナリオ。
+        """
+        from unittest.mock import MagicMock
+
+        from src.analysis import ranking_judge as rj
+        from src.analysis.ranking_judge import rank_with_claude_batch
+
+        client = MagicMock()
+        client.messages.create.return_value = good_response
+        bundle = make_bundle()
+        cache_path = rj._cache_path(tmp_path, bundle, rj.DEFAULT_MODEL_VERSION)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("{not valid json", encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="analysis.ranking_judge"):
+            results = rank_with_claude_batch(
+                [bundle], anthropic_client=client, cache_dir=tmp_path
+            )
+
+        # 破損キャッシュは無視されて API 呼び出しが発生
+        assert client.messages.create.call_count == 1
+        assert results[0].fallback_reason is None
+        # 警告ログが残っている（silent failure 防止）
+        assert any("ranking cache 破損" in r.message for r in caplog.records)
+
+
+class TestRankingSignalBundleTickerValidation:
+    """security-review H-1 対策: ``RankingSignalBundle.__post_init__`` での ticker 検証。
+
+    ``_cache_path`` でのパストラバーサルを最上流で構造的に遮断する。
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "invalid_ticker",
+        [
+            "../../../tmp/evil",  # path traversal
+            "AAPL/etc",  # forward slash
+            "AAPL\\etc",  # backslash
+            "",  # empty
+            "A" * 21,  # too long
+            "AAPL 株",  # 非 ASCII
+            "AAPL;rm -rf",  # 制御文字
+        ],
+    )
+    def test_不正な_ticker_は_ValueError(
+        self, make_bundle: Any, invalid_ticker: str
+    ) -> None:
+        with pytest.raises(ValueError, match="ticker contains forbidden"):
+            make_bundle(ticker=invalid_ticker)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "valid_ticker",
+        [
+            "AAPL",  # 米国大型株
+            "BRK.A",  # ドット含み
+            "BRK-A",  # ハイフン含み
+            "7203.T",  # 日本株 (TSE suffix)
+            "9984",  # 日本株 (数字のみ)
+            "X",  # 1 文字
+        ],
+    )
+    def test_正常な_ticker_は通過(
+        self, make_bundle: Any, valid_ticker: str
+    ) -> None:
+        bundle = make_bundle(ticker=valid_ticker)
+        assert bundle.ticker == valid_ticker

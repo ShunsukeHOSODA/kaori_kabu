@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
@@ -21,10 +22,12 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from analysis._common import extract_json
 from analysis._provenance import get_current_git_commit
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -40,6 +43,11 @@ ACADEMIC_SOURCE: Final[str] = (
 # PRD §FR6: Sonnet ranking judge 結果の 24h キャッシュ TTL（秒）。
 # mtime からの経過秒がこれを超えるとキャッシュ無効化、再判定が発生する。
 CACHE_TTL_SEC: Final[int] = 24 * 3600
+
+# ticker 文字種制約 — `_cache_path` のパストラバーサル防御（security review H-1）。
+# 米国株（A-Z 0-9）/ 日本株（数字 4 桁 + ``.T`` 等）の実在パターンを許容しつつ、
+# ``/`` ``\`` ``..`` 等のパス成分を構造的に拒否する。__post_init__ で強制適用。
+_TICKER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9.\-]{1,20}$")
 
 # ---------------------------------------------------------------------------
 # SYSTEM_PROMPT — Sonnet 4.6 ranking judge instruction
@@ -383,6 +391,19 @@ class RankingSignalBundle:
     regime: Literal["Bull", "Choppy", "Crisis"]
     regime_state_probs: dict[str, Decimal]
     fetched_at: datetime
+
+    def __post_init__(self) -> None:
+        """ticker の文字種を ``_TICKER_PATTERN`` で検証。
+
+        security review H-1 対策: ``_cache_path`` の SHA256 鍵に ticker prefix を
+        付与している都合、``../`` 等の path traversal 文字が混入すると
+        ``cache_dir`` 外へファイル書き込み可能になる。最上流で構造的に遮断する。
+        """
+        if not _TICKER_PATTERN.fullmatch(self.ticker):
+            raise ValueError(
+                f"ticker contains forbidden characters (A-Z 0-9 . - のみ許容): "
+                f"{self.ticker!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -815,15 +836,18 @@ def rank_single_with_claude(
     )
 
     # Path 2: Pydantic 検証 — extra='forbid' / 範囲制約 / 予測フィールド reject
+    # python-review HIGH 対策: ``parsed`` を mutate せず immutable コピーから構築する。
     try:
-        confidence = Decimal(str(parsed.pop("confidence", 0)))
+        confidence = Decimal(str(parsed.get("confidence", 0)))
+        ranking_score = parsed.get("ranking_score", 0)
+        sonnet_fields = {k: v for k, v in parsed.items() if k != "confidence"}
         result = RankingResult(
-            **parsed,
+            **sonnet_fields,
             confidence=confidence,
             confidence_adjusted=apply_regime_confidence(
                 confidence, regime=bundle.regime
             ),
-            kelly_multiplier=compute_kelly_multiplier(parsed.get("ranking_score", 0)),
+            kelly_multiplier=compute_kelly_multiplier(ranking_score),
             fallback_reason=None,
             metadata=raw_metadata,
         )
@@ -917,8 +941,15 @@ def _read_cache(cache_path: Path, *, ttl_sec: int) -> RankingResult | None:
         payload["supporting_signals"] = tuple(payload["supporting_signals"])
         payload["risk_signals"] = tuple(payload["risk_signals"])
         return RankingResult(**payload, metadata=metadata)
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-        # 破損キャッシュは黙って無視（次回判定で再生成）。
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+        # code-review MEDIUM 対策: 破損キャッシュは miss 扱いで再生成するが、
+        # silent failure を避けるため WARN ログを残す（ディスク破損 / スキーマ
+        # 変更 / シリアライズバグの早期発見に利用）。
+        logger.warning(
+            "ranking cache 破損のため miss 扱い: path=%s error=%s",
+            cache_path,
+            type(exc).__name__,
+        )
         return None
 
 
@@ -934,8 +965,12 @@ def _write_cache(cache_path: Path, result: RankingResult) -> None:
     md_dict = asdict(result.metadata)
     md_dict["calculated_at"] = result.metadata.calculated_at.isoformat()
     payload["metadata"] = md_dict
+    # code-review MEDIUM 対策: ``default=str`` は型ずれを隠す救済機構として
+    # 機能してしまうので削除。``Decimal`` は ``model_dump(mode='json')``、
+    # ``datetime`` は明示 ``isoformat()`` で予め変換済みであり、未知の非
+    # 直列化型が混入した場合は ``TypeError`` を発生させて早期検出する。
     cache_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
