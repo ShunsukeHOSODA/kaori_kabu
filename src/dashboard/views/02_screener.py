@@ -1721,6 +1721,23 @@ if "screening_session" in st.session_state:
             if k in _selected_row
         }
 
+        # Phase 5.4.3: 該当 ticker の Claude 判定を抽出
+        # session_state["screening_session"] に格納された ranking_results /
+        # signal_bundles から buy_ticker に対応する RankingResult を探索し、
+        # JSON 直列化可能な dict として Decision Log に記録する。
+        # Sonnet 縮退時は ranking_results=None になるため、その場合は None を渡す。
+        claude_rank_dict: dict[str, Any] | None = None
+        _ls = st.session_state["screening_session"]
+        _ranking_results = _ls.get("ranking_results")
+        _signal_bundles = _ls.get("signal_bundles")
+        if _ranking_results is not None and _signal_bundles is not None:
+            for _result, _bundle in zip(
+                _ranking_results, _signal_bundles, strict=True
+            ):
+                if _bundle.ticker == buy_ticker:
+                    claude_rank_dict = _result.model_dump(mode="json")
+                    break
+
         _buy_request = BuyOrderRequest(
             ticker=buy_ticker,
             shares=Decimal(str(int(buy_shares))),
@@ -1736,6 +1753,7 @@ if "screening_session" in st.session_state:
             portfolio_value_jpy=_portfolio_value_jpy_dec,
             additional_rationale=buy_rationale or "",
             code_commit=_code_commit,
+            claude_ranking=claude_rank_dict,
         )
 
         _log_path = submit_buy_order(
@@ -1743,6 +1761,12 @@ if "screening_session" in st.session_state:
         )
         _kelly_status = (
             "✅ 範囲内" if not _exceeds_kelly else "⚠️ 上限超過"
+        )
+        # Phase 5.4.3: Claude 判定の有無を success メッセージに反映
+        _claude_status = (
+            f"🤖 Claude スコア: {claude_rank_dict['ranking_score']}/100"
+            if claude_rank_dict is not None
+            else "🤖 Claude 判定: 縮退中"
         )
         _success_msg = (
             f"✅ **BUY 記録完了**\n\n"
@@ -1752,6 +1776,7 @@ if "screening_session" in st.session_state:
             f"（{composite_preset}）\n"
             f"- Kelly 推奨: ¥{_kelly_size_jpy:,} / 実発注: "
             f"¥{_order_amount:,} （{_kelly_status}）\n"
+            f"- {_claude_status}\n"
             f"- 📁 JSONL: `{_log_path}`"
         )
         st.success(_success_msg)

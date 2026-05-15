@@ -297,6 +297,57 @@ class TestAppendDecisionKelly:
 
 
 @pytest.mark.unit
+class TestAppendDecisionClaudeRanking:
+    """Phase 5.4.3: Claude Sonnet 4.6 Stage 2 判定を Decision Log に保存。
+
+    Provenance §9.8.3: 「なぜこの銘柄を買ったか」を Claude 判定
+    （ranking_score / counter_view / lens_views / kelly_multiplier 等）
+    まで含めて完全再現可能にする。
+    """
+
+    def test_claude_ranking埋め込みでJSONLに書き込まれる(
+        self, tmp_path: Path
+    ) -> None:
+        """append_decision の claude_ranking キーワード引数が JSONL に
+        そのまま dict として書き込まれる。
+        """
+        from portfolio.decision_log import append_decision
+
+        claude_dict = {"ranking_score": 90, "fallback_reason": None}
+        log_path = append_decision(
+            log_dir=tmp_path,
+            action="BUY",
+            ticker="GOOG",
+            shares=Decimal("3"),
+            price_jpy=Decimal("180000"),
+            rationale="テスト",
+            claude_ranking=claude_dict,
+        )
+
+        record = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert record["claude_ranking"] == claude_dict
+
+    def test_claude_ranking既定値はNone(self, tmp_path: Path) -> None:
+        """既存呼び出し（claude_ranking 引数なし）でも壊れず、フィールドは
+        ``None`` で JSONL に書き込まれる（後方互換）。
+        """
+        from portfolio.decision_log import append_decision
+
+        log_path = append_decision(
+            log_dir=tmp_path,
+            action="HOLD",
+            ticker="META",
+            shares=Decimal("0"),
+            price_jpy=Decimal("0"),
+            rationale="ホールド",
+        )
+
+        record = json.loads(log_path.read_text(encoding="utf-8").strip())
+        assert "claude_ranking" in record
+        assert record["claude_ranking"] is None
+
+
+@pytest.mark.unit
 class TestBuildKellyRecommendation:
     """Half-Kelly 計算過程を Decision Log 直書き可能な dict 化するヘルパー。"""
 

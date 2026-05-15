@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from src.portfolio.decision_log import append_decision
 from src.strategies.kelly import KellyParams, build_kelly_recommendation
@@ -57,6 +58,11 @@ class BuyOrderRequest:
         additional_rationale: ユーザー記述の追加根拠（任意）
         stop_loss_atr_jpy: ATR トレーリングストップ価格（任意）
         code_commit: 計算時の git commit short hash（任意）
+        claude_ranking: Claude による Stage 2 総合判定結果
+            （:meth:`RankingResult.model_dump(mode="json")` の dict）。
+            Phase 5.4.3 追加。Anthropic API キー不在時 / Sonnet 縮退時は
+            ``None``。Decision Log に格納されることで「なぜ買ったか」を
+            Claude 判定まで含めて完全再現可能（CLAUDE.md §9.8.3）。
     """
 
     ticker: str
@@ -68,6 +74,7 @@ class BuyOrderRequest:
     additional_rationale: str = ""
     stop_loss_atr_jpy: Decimal | None = None
     code_commit: str | None = None
+    claude_ranking: dict[str, Any] | None = None
 
 
 def submit_buy_order(
@@ -124,6 +131,7 @@ def submit_buy_order(
         stop_loss_atr_jpy=request.stop_loss_atr_jpy,
         code_commit=request.code_commit,
         kelly_recommendation=kelly_rec,
+        claude_ranking=request.claude_ranking,
     )
 
 

@@ -39,6 +39,23 @@ JSONL 1 行のスキーマ:
             "portfolio_value_jpy": "1000000",
             "calculation_method": "half_kelly_v1",
             "academic_source": "Thorp 2006 ..."
+        } | null,
+        "claude_ranking": {                        // Phase 5.4.3 追加
+            "ranking_score": 87,
+            "recommendation_summary": "...",
+            "supporting_signals": ["..."],
+            "risk_signals": ["..."],
+            "counter_view": "...",
+            "lens_views": {
+                "Buffett_Munger": "...",
+                "Burry": "...",
+                "Lynch": "..."
+            },
+            "confidence": "0.82",
+            "confidence_adjusted": "0.78",
+            "kelly_multiplier": "0.95",
+            "fallback_reason": null,
+            "metadata": { ... }
         } | null
     }
 """
@@ -70,6 +87,7 @@ def append_decision(
     code_commit: str | None = None,
     news_context: dict[str, Any] | None = None,
     kelly_recommendation: dict[str, Any] | None = None,
+    claude_ranking: dict[str, Any] | None = None,
 ) -> Path:
     """売買判断を JSONL に 1 行追記（append-only）。
 
@@ -95,6 +113,12 @@ def append_decision(
             :func:`strategies.kelly.build_kelly_recommendation` で生成するのが
             標準。「なぜこの数量を買ったか」を入力（win_rate / payoff）から
             最終 capped 推奨サイズまで再現可能にする（CLAUDE.md §9.8.3）。
+        claude_ranking: Claude Sonnet 4.6 による Stage 2 総合判定結果（Phase
+            5.4.3 追加）。:class:`analysis.ranking_judge.RankingResult` を
+            ``model_dump(mode="json")`` で dict 化したもの。Sonnet 不在 /
+            縮退時は ``None``。「なぜこの銘柄を買ったか」を Claude 判定
+            （ranking_score / counter_view / lens_views / kelly_multiplier
+            等）まで含めて完全再現可能にする（CLAUDE.md §9.8.3）。
 
     Returns:
         書き込み先のパス。
@@ -117,6 +141,7 @@ def append_decision(
         "code_commit": code_commit,
         "news_context": news_context,
         "kelly_recommendation": kelly_recommendation,
+        "claude_ranking": claude_ranking,
     }
 
     with log_path.open("a", encoding="utf-8") as f:

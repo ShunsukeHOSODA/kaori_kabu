@@ -149,3 +149,112 @@ class TestSubmitBuyOrder:
         assert "75.8" in rationale
         assert "Buffett_型_暫定" in rationale
         assert "長期保有候補、決算良好" in rationale
+
+
+@pytest.mark.unit
+class TestSubmitBuyOrderClaudeRanking:
+    """Phase 5.4.3: BuyOrderRequest.claude_ranking が Decision Log に記録される。
+
+    Provenance §9.8.3: 「なぜこの銘柄を買ったか」を Claude 判定
+    （ranking_score / counter_view / lens_views / kelly_multiplier 等）
+    まで含めて完全再現可能。
+    """
+
+    def test_claude_ranking指定時にJSONLへ書き込まれる(
+        self, tmp_path: Path
+    ) -> None:
+        """claude_ranking dict が Decision Log の claude_ranking フィールド
+        にそのまま書き込まれる。
+        """
+        from portfolio.buy_decision import (
+            BuyOrderRequest,
+            ScreenerTrigger,
+            submit_buy_order,
+        )
+        from strategies.kelly import KellyParams
+
+        claude_rank_dict = {
+            "ranking_score": 87,
+            "recommendation_summary": "テスト用判定",
+            "supporting_signals": ["ROC 高", "EY 高"],
+            "risk_signals": ["セクター集中"],
+            "counter_view": "Value Trap 可能性",
+            "lens_views": {
+                "Buffett_Munger": "質高、長期保有妥当",
+                "Burry": "テールリスク低",
+                "Lynch": "成長余地あり",
+            },
+            "confidence": "0.82",
+            "confidence_adjusted": "0.78",
+            "kelly_multiplier": "0.95",
+            "fallback_reason": None,
+            "metadata": {"model": "claude-sonnet-4-6"},
+        }
+        request = BuyOrderRequest(
+            ticker="AAPL",
+            shares=Decimal("10"),
+            price_jpy=Decimal("25000"),
+            trigger=ScreenerTrigger(
+                skill="composite-score-screener",
+                preset="Buffett_型_暫定",
+                composite_score=Decimal("82.5"),
+                sub_scores={"Q": Decimal("90")},
+                screener_run_at="2026-05-15T10:00:00+00:00",
+            ),
+            kelly_params=KellyParams(
+                win_rate=Decimal("0.6"),
+                win_loss_ratio=Decimal("2.0"),
+            ),
+            portfolio_value_jpy=Decimal("1000000"),
+            claude_ranking=claude_rank_dict,
+        )
+        log_path = submit_buy_order(request, log_dir=tmp_path)
+
+        # 書き込まれた JSONL の最終行を読む
+        with log_path.open("r", encoding="utf-8") as f:
+            last_line = f.readlines()[-1]
+        record = json.loads(last_line)
+
+        assert record["claude_ranking"] is not None
+        assert record["claude_ranking"]["ranking_score"] == 87
+        assert (
+            record["claude_ranking"]["lens_views"]["Burry"] == "テールリスク低"
+        )
+
+    def test_claude_ranking不指定時は後方互換でNone(
+        self, tmp_path: Path
+    ) -> None:
+        """claude_ranking 引数を省略しても既存 BuyOrderRequest 構築は成功し、
+        JSONL の claude_ranking フィールドは ``None`` で書き込まれる。
+        """
+        from portfolio.buy_decision import (
+            BuyOrderRequest,
+            ScreenerTrigger,
+            submit_buy_order,
+        )
+        from strategies.kelly import KellyParams
+
+        request = BuyOrderRequest(
+            ticker="MSFT",
+            shares=Decimal("5"),
+            price_jpy=Decimal("30000"),
+            trigger=ScreenerTrigger(
+                skill="composite-score-screener",
+                preset="Buffett_型_暫定",
+                composite_score=Decimal("75"),
+                sub_scores={},
+                screener_run_at="2026-05-15T10:00:00+00:00",
+            ),
+            kelly_params=KellyParams(
+                win_rate=Decimal("0.6"),
+                win_loss_ratio=Decimal("2.0"),
+            ),
+            portfolio_value_jpy=Decimal("500000"),
+        )
+        log_path = submit_buy_order(request, log_dir=tmp_path)
+
+        with log_path.open("r", encoding="utf-8") as f:
+            last_line = f.readlines()[-1]
+        record = json.loads(last_line)
+
+        assert record["claude_ranking"] is None
