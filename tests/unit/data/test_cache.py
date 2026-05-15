@@ -132,3 +132,70 @@ class TestParquetCachePathSafety:
         )
 
         assert retrieved is not None
+
+    def test_ドットドットを含むキーは__に置換されてパストラバーサル防止(
+        self, tmp_path: Path
+    ) -> None:
+        """Phase 5.3 review S-H-1 対策: key に ``..`` を含めても base_dir
+        外にファイルが書かれない。
+
+        ``_safe_key`` の変換順序:
+            1. ``_UNSAFE_PATH_CHARS`` (``/:?*<>|"\\``) を ``_`` に置換
+            2. 残存した ``..`` を ``__`` に置換
+        ``"../evil"`` の変換: ``/`` → ``_`` で ``".._evil"`` (``.``2 つ + ``_``)
+        → ``..`` → ``__`` で ``"___evil"`` (``_``3 つ)。
+        """
+        from data.cache import ParquetCache
+
+        cache = ParquetCache(base_dir=tmp_path)
+        df = pd.DataFrame({"x": [1]})
+
+        cache.set(provider="EODHD", key="../evil", df=df)
+
+        # 期待: tmp_path/EODHD/___evil.parquet に書かれる（アンダースコア 3 つ）
+        expected_path = tmp_path / "EODHD" / "___evil.parquet"
+        assert expected_path.exists()
+
+        # 親ディレクトリには .._evil.parquet 等は書かれていない
+        parent = tmp_path.parent
+        leaked = [
+            p for p in parent.glob("**/*evil*.parquet")
+            if p.resolve() != expected_path.resolve()
+        ]
+        assert leaked == [], f"Path traversal detected: {leaked}"
+
+    def test_provider_に_ドットドットを含んでも安全(
+        self, tmp_path: Path
+    ) -> None:
+        """provider 側の ``..`` も同様に遮断される（二重防衛）。
+
+        ``"../sneaky_provider"`` の変換:
+            ``/`` → ``_`` で ``".._sneaky_provider"`` → ``..`` → ``__`` で
+            ``"___sneaky_provider"``。
+        """
+        from data.cache import ParquetCache
+
+        cache = ParquetCache(base_dir=tmp_path)
+        df = pd.DataFrame({"x": [1]})
+
+        cache.set(provider="../sneaky_provider", key="aapl", df=df)
+        # provider は ___sneaky_provider に置換され、base_dir 配下に作成
+        expected_dir = tmp_path / "___sneaky_provider"
+        assert expected_dir.is_dir()
+        assert (expected_dir / "aapl.parquet").exists()
+
+    def test_バックスラッシュとコロンとパイプも置換される(
+        self, tmp_path: Path
+    ) -> None:
+        """既存 _UNSAFE_PATH_CHARS の挙動が ``..`` 追加後も継続することを確認。"""
+        from data.cache import ParquetCache
+
+        cache = ParquetCache(base_dir=tmp_path)
+        df = pd.DataFrame({"x": [1]})
+
+        # \ : | はすべて _ に置換される
+        cache.set(provider="EODHD", key="a\\b:c|d", df=df)
+        retrieved = cache.get(
+            provider="EODHD", key="a\\b:c|d", ttl_sec=3600
+        )
+        assert retrieved is not None

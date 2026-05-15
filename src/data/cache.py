@@ -69,17 +69,45 @@ class ParquetCache:
 
     @staticmethod
     def _safe_key(key: str) -> str:
-        """ファイルシステム不可文字を ``_`` に置換。"""
+        """ファイルシステム不可文字と ``..`` を除去し、ファイル名として安全な文字列にする。
+
+        Phase 5.3 review (S-H-1) 対策:
+            ``_UNSAFE_PATH_CHARS`` には ``.`` が含まれないため、``../evil``
+            を渡すと ``.`` のみが残って ``..`` がそのまま生き残り、Path 結合で
+            ``base_dir`` 外にファイルを書き込めるパストラバーサルが成立する。
+            Phase 5.2 で ``_cache_path`` H-1 として ranking_judge 側で構造的に
+            遮断したのと同根の脆弱性が ``ParquetCache`` 汎用層にも残存していた
+            ため、``..`` を ``__`` に明示的に置換して構造的に遮断する。
+        """
         result = key
         for ch in _UNSAFE_PATH_CHARS:
             result = result.replace(ch, "_")
+        # パストラバーサル防止: ``..`` を ``__`` に明示置換 (Phase 5.2 H-1 と同根)
+        result = result.replace("..", "__")
         return result
 
     def _path(self, provider: str, key: str) -> Path:
-        """キャッシュファイルパスを構築（provider 別サブディレクトリ）。"""
+        """キャッシュファイルパスを構築（provider 別サブディレクトリ）。
+
+        Phase 5.3 review (S-H-1) 二重防衛:
+            ``_safe_key`` で ``..`` を除去するが、``resolve()`` 後にも
+            ``base_dir`` 配下であることを ``relative_to`` で検証して
+            シンボリックリンク経由の脱出経路も遮断する。
+        """
         provider_dir = self.base_dir / self._safe_key(provider)
         provider_dir.mkdir(parents=True, exist_ok=True)
-        return provider_dir / f"{self._safe_key(key)}{CACHE_FILE_SUFFIX}"
+        cache_path = provider_dir / f"{self._safe_key(key)}{CACHE_FILE_SUFFIX}"
+
+        # 二重防衛: resolve 後が base_dir 配下であることを強制
+        base_resolved = self.base_dir.resolve()
+        try:
+            cache_path.resolve().relative_to(base_resolved)
+        except ValueError as err:
+            raise ValueError(
+                f"Cache path escapes base_dir: {cache_path} "
+                f"(base={base_resolved})"
+            ) from err
+        return cache_path
 
     def is_fresh(self, path: Path, ttl_sec: int) -> bool:
         """ファイルが TTL 内（mtime からの経過秒 <= ttl_sec）か。"""
