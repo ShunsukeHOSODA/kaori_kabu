@@ -982,6 +982,7 @@ class TestRankWithClaudeBatch:
         from unittest.mock import MagicMock
 
         from src.analysis import ranking_judge as rj
+        from src.analysis import ranking_judge_cache as rjc
 
         client = MagicMock()
         client.messages.create.return_value = good_response
@@ -993,9 +994,12 @@ class TestRankWithClaudeBatch:
         )
         assert client.messages.create.call_count == 1
 
-        # 25h 後の世界に時計を進める → TTL (24h) 超過扱い
+        # 25h 後の世界に時計を進める → TTL (24h) 超過扱い。
+        # ``_now_utc`` の monkeypatch は ``ranking_judge_cache`` 側を対象にする
+        # （``rj._now_utc`` への setattr は re-export binding のみで _read_cache
+        # 内の名前解決には効かない — Phase 6 第 2 弾 refactor の余波）。
         future = datetime.now(UTC) + timedelta(hours=25)
-        monkeypatch.setattr(rj, "_now_utc", lambda: future)
+        monkeypatch.setattr(rjc, "_now_utc", lambda: future)
 
         rj.rank_with_claude_batch(
             bundles, anthropic_client=client, cache_dir=tmp_path
@@ -1057,7 +1061,7 @@ class TestRankWithClaudeBatch:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text("{not valid json", encoding="utf-8")
 
-        with caplog.at_level("WARNING", logger="analysis.ranking_judge"):
+        with caplog.at_level("WARNING", logger="analysis.ranking_judge_cache"):
             results = rank_with_claude_batch(
                 [bundle], anthropic_client=client, cache_dir=tmp_path
             )
