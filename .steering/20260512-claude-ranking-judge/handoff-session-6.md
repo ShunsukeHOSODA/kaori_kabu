@@ -269,6 +269,49 @@ def _display_screening_results(
 
 Claude Code auto mode classifier が main 直 push を auto-deny。Session 6 では 8 commit すべてローカルに留まる。user による `! git push origin main` でまとめて push 推奨。
 
+### 2.8 Playwright MCP セットアップ完了 ✅ (Session 6 末尾追加)
+
+Phase 5.5.2 の Playwright E2E シナリオ実装の **前提条件をクリア**。Session 6 末尾で `playwright-chrome-setup.md` (Honda_vlog プロジェクト由来) の手順を kaori_kabu に適用済。
+
+**完了状態**:
+- `/Users/kaori/Desktop/kaori_kabu/.mcp.json` 新規作成 (Chrome Extension Bridge 構成)
+- `/Users/kaori/Desktop/kaori_kabu/.env` に `PLAYWRIGHT_MCP_EXTENSION_TOKEN=...` 追加 (Honda_vlog の token を流用、同じ Chrome 拡張に接続するため共有 OK)
+- Claude Code 再起動 → MCP 設定読込済
+- 動作確認: `mcp__playwright__browser_navigate("https://example.com")` で Page Title `Example Domain` 取得成功
+
+**セキュリティ確認**:
+- `.env` は `.gitignore` の `.env` 行で ignore 済 → commit リスクなし
+- `.mcp.json` には `${PLAYWRIGHT_MCP_EXTENSION_TOKEN}` placeholder のみ、token 本体は埋め込まれない
+- Cross-project credential copy は最初 auto mode classifier がブロックしたが、user 明示承認 (「claudeがやって」) 後に retry で成功
+
+**MCP ツール一覧 (deferred、ToolSearch で schema ロード必要)**:
+- `mcp__playwright__browser_navigate(url)` — URL 移動
+- `mcp__playwright__browser_snapshot()` — accessibility tree 取得
+- `mcp__playwright__browser_click(target)` — クリック
+- `mcp__playwright__browser_type(target, text)` — 入力
+- `mcp__playwright__browser_evaluate(function)` — JS 実行
+- `mcp__playwright__browser_press_key(key)` — キー押下
+- `mcp__playwright__browser_wait_for(text/time)` — 待機
+- `mcp__playwright__browser_tabs(action)` — タブ操作
+- `mcp__playwright__browser_file_upload(paths)` — ファイル UP (制約あり)
+- `mcp__playwright__browser_close()` — ページクローズ
+
+**初回読み込みコマンド** (Session 7 開始時に実行推奨):
+```
+ToolSearch query="select:mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_click,mcp__playwright__browser_type,mcp__playwright__browser_evaluate"
+```
+
+**Phase 5.5.2 E2E シナリオ実装への影響**:
+- セットアップ工数 (1-2h) が **完全削減**
+- Streamlit `uv run streamlit run src/dashboard/main.py` 起動 → `mcp__playwright__browser_navigate("http://localhost:8501")` で直接接続可能
+- 旧見積もり 3-5h → **新見積もり 2-3h** (シナリオ実装 + debug のみ)
+
+**ハマりポイント (Session 7 で要注意、`playwright-chrome-setup.md` 由来)**:
+- `mcp__playwright__browser_file_upload` は project 配下のファイルのみ UP 可
+- Chrome を閉じると Bridge 切れ → `Target page, context or browser has been closed` → Chrome 再起動 + 拡張から token 再取得が必要な場合あり
+- `aria-ref=eXXX` は navigate ごとリセット (同ページ内は累積)
+- 要素が画面外なら `element.scrollIntoView({ block: 'center' })` で表示してから click
+
 ---
 
 ## 3. 残タスク（7 タスク = Phase 5.5）
@@ -280,11 +323,12 @@ Claude Code auto mode classifier が main 直 push を auto-deny。Session 6 で
   - `src/dashboard/views/_screener_display.py` (`_display_*` 関数群を移動)
   - `src/dashboard/views/02_screener.py` (サイドバー UI + 経路ルーティングのみ、~400 行目標)
 - [ ] **5.5.1**: `ScreeningSession` (frozen dataclass) 化 (P-M-2 / C-M-2 解消)
-- [ ] **5.5.2**: Playwright E2E シナリオ 4 件
+- [ ] **5.5.2**: Playwright E2E シナリオ 4 件 (✅ **環境セットアップ完了済、§2.8 参照**)
   - Bull market 起動 → Magic Formula 結果表示
   - 5.5.2-b: Claude 判定 TOP 5 詳細カード表示 (mock anthropic)
   - 5.5.2-c: BUY フォーム → Decision Log JSONL 記録 + claude_ranking 含む確認
   - 5.5.2-d: 同銘柄 BUY 再実行で Sonnet キャッシュヒット確認
+  - 接続方法: `uv run streamlit run src/dashboard/main.py &` → `mcp__playwright__browser_navigate("http://localhost:8501")`
 - [ ] **5.5.3**: Sonnet 価格 / モデル ID 動的取得 (handoff §5.6 / C-L-1)
 - [ ] **5.5.4**: handoff §5.8-5.10 持ち越し課題の Issue 起票 (TRACKED_FUNDS CIK 実機検証 / Decision Log キャッシュ膨張 / Prompt Caching ヒット率実測)
 - [ ] **5.5.5**: handoff doc 起草 (Phase 5 完全クローズ時点、Session 7 用)
@@ -317,6 +361,10 @@ Phase 5.5 (E2E + handoff + 構造的整理) から再開してほしい。Subage
   → _screener_compute.py + _screener_display.py に切り出し、02_screener.py は ~400 行
   → 同時に ScreeningSession (frozen dataclass) 化 (P-M-2 / C-M-2 解消)
 
+**Playwright MCP 接続済 (Session 6 末尾で完了、§2.8 参照)**:
+  → Session 7 初回は ToolSearch で playwright tool schema ロード
+  → Phase 5.5.2 E2E シナリオ実装で `mcp__playwright__browser_*` を即時利用可能
+
 【事前読み込み（必読）】
 - .steering/20260512-claude-ranking-judge/handoff-session-6.md (本ファイル)
 - .steering/20260512-claude-ranking-judge/handoff-session-5.md
@@ -327,6 +375,8 @@ Phase 5.5 (E2E + handoff + 構造的整理) から再開してほしい。Subage
 - src/analysis/monte_carlo.py / _adapters.py (Phase 5.4.0 で追加)
 - src/dashboard/widgets/ranking_card.py
 - src/portfolio/buy_decision.py / decision_log.py (ClaudeRankingDict)
+- /Users/kaori/Desktop/playwright-chrome-setup.md (Phase 5.5.2 で参照、Chrome Extension モード操作テクニック + ハマりポイント)
+- /Users/kaori/Desktop/kaori_kabu/.mcp.json (Playwright MCP 設定、Session 6 末尾で新規作成)
 
 【次の Task】
 1. Phase 5.5.0: 02_screener.py ファイル分割 (最優先、Phase 5.5 全タスクの前提)
@@ -523,4 +573,8 @@ Phase 5.4.1 (`_display_screening_results` 抽出、+150 行) / Phase 5.4.2 (Sonn
 
 ---
 
-**Session 6 終わり** — Phase 5.4 完全クローズ ✅。Session 7 では Phase 5.5 (02_screener.py ファイル分割 + ScreeningSession dataclass + Playwright E2E + 最終 handoff + 最終並列レビュー + push) に進む。Phase 5.4 で導入した `ClaudeRankingDict` / `_decimal_default` / TypedDict 型契約 / 12 引数集約候補 (ScreeningSession) / fan chart 部品化が、Phase 5.5 の構造的整理の前提となる。**user による `! git push origin main` で 8 commit を origin/main に反映してから Session 7 を開始することを推奨**。
+**Session 6 終わり** — Phase 5.4 完全クローズ ✅。Session 7 では Phase 5.5 (02_screener.py ファイル分割 + ScreeningSession dataclass + Playwright E2E + 最終 handoff + 最終並列レビュー + push) に進む。Phase 5.4 で導入した `ClaudeRankingDict` / `_decimal_default` / TypedDict 型契約 / 12 引数集約候補 (ScreeningSession) / fan chart 部品化が、Phase 5.5 の構造的整理の前提となる。
+
+**追加成果 (Session 6 末尾)**: Playwright MCP セットアップ完了 (§2.8)。Phase 5.5.2 E2E シナリオ実装のセットアップ工数 (1-2h) が完全削減され、**Phase 5.5 完全完了見積もりが 2-3 セッション (5-7h) に短縮**。
+
+**push 状態**: 9 commit (`419fc32` → `03b5da6` + 本 doc 更新 commit) は `b0db5e7..03b5da6` で `origin/main` 反映済。Session 7 開始時に最新の `main` を引いて Phase 5.5.0 のファイル分割から着手。

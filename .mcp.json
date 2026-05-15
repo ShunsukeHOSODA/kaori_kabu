@@ -1,0 +1,20 @@
+{
+  "_comment": "kaori_kabu プロジェクト固有 MCP サーバー設定。Claude Code が kaori_kabu 内で起動時に自動読込。グローバル ~/.claude.json と併存。`_` プレフィックスのキーはアンダースコア外せば有効化。",
+  "_docs": "https://docs.claude.com/claude-code/mcp",
+
+  "mcpServers": {
+    "playwright": {
+      "_comment": "Chrome Extension モード。Chrome 拡張機能『Playwright MCP Bridge』に接続して、ログイン済の Chrome で Streamlit ダッシュボード等を直接操作可能。Phase 5.5 の Playwright E2E シナリオ実行で活用。トークンは .env 経由で注入。",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--extension",
+        "--browser=chrome"
+      ],
+      "env": {
+        "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "${PLAYWRIGHT_MCP_EXTENSION_TOKEN}"
+      }
+    }
+  }
+}
