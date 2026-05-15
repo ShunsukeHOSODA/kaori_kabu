@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import numpy as np
-import plotly.graph_objects as go
 import streamlit as st
 
+from src.analysis.monte_carlo import (
+    percentiles_for_fan_chart,
+    render_fan_chart_plotly,
+    simulate_gbm_paths,
+)
 from src.config.settings import settings
 
 st.set_page_config(
@@ -74,53 +77,19 @@ with st.sidebar:
     run = st.button("🎲 シミュレーション実行", type="primary")
 
 if run:
-    rng = np.random.default_rng(42)
-    dt = 1 / 252
-    Z = rng.standard_normal((n_sims, horizon))
-    drift = (mu - 0.5 * sigma**2) * dt
-    diffusion = sigma * np.sqrt(dt) * Z
-    log_returns = drift + diffusion
-    paths = np.zeros((n_sims, horizon + 1))
-    paths[:, 0] = initial
-    paths[:, 1:] = initial * np.exp(np.cumsum(log_returns, axis=1))
-
-    percentiles = np.percentile(paths, [5, 25, 50, 75, 95], axis=0)
-    days = np.arange(horizon + 1)
-
-    fig = go.Figure()
-    fig.add_traces(
-        [
-            go.Scatter(
-                x=days, y=percentiles[4], fill=None, mode="lines",
-                line_color="lightblue", name="95%ile（楽観）",
-            ),
-            go.Scatter(
-                x=days, y=percentiles[0], fill="tonexty", mode="lines",
-                line_color="lightblue", fillcolor="rgba(0,150,255,0.1)",
-                name="5%ile（悲観）",
-            ),
-            go.Scatter(
-                x=days, y=percentiles[3], fill=None, mode="lines",
-                line_color="blue", name="75%ile",
-            ),
-            go.Scatter(
-                x=days, y=percentiles[1], fill="tonexty", mode="lines",
-                line_color="blue", fillcolor="rgba(0,100,255,0.3)",
-                name="25%ile",
-            ),
-            go.Scatter(
-                x=days, y=percentiles[2], mode="lines",
-                line=dict(color="darkblue", width=3),
-                name="中央値（50%ile）",
-            ),
-        ]
+    # Phase 5.4.0-A: GBM 計算は src/analysis/monte_carlo.py の純粋関数に委譲。
+    paths = simulate_gbm_paths(
+        start_price=float(initial),
+        mu=mu,
+        sigma=sigma,
+        days=horizon,
+        n_paths=n_sims,
+        seed=42,
     )
-    fig.update_layout(
-        title="モンテカルロ 1000 パス確率分布（ファンチャート）",
-        xaxis_title="経過営業日",
-        yaxis_title="ポートフォリオ価値 (JPY)",
-        height=600,
-    )
+    percentile_df = percentiles_for_fan_chart(paths)
+    fig = render_fan_chart_plotly(percentile_df, ticker="ポートフォリオ全体")
+    # 既存 view 固有の y 軸ラベル (JPY 通貨) は上書きで補正。
+    fig.update_layout(yaxis_title="ポートフォリオ価値 (JPY)")
     st.plotly_chart(fig, use_container_width=True)
 
     st.caption(
@@ -132,17 +101,17 @@ if run:
     with col1:
         st.metric(
             "中央値（50% の確率でこれより上）",
-            f"¥{int(percentiles[2, -1]):,}",
+            f"¥{int(percentile_df['p50'].iloc[-1]):,}",
         )
     with col2:
         st.metric(
             "悲観シナリオ（5% の確率で起こる最悪寄り）",
-            f"¥{int(percentiles[0, -1]):,}",
+            f"¥{int(percentile_df['p5'].iloc[-1]):,}",
         )
     with col3:
         st.metric(
             "楽観シナリオ（5% の確率で起こる最良寄り）",
-            f"¥{int(percentiles[4, -1]):,}",
+            f"¥{int(percentile_df['p95'].iloc[-1]):,}",
         )
 else:
     st.info("左サイドバーでパラメータを設定し「シミュレーション実行」を押してください。")
