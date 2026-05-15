@@ -20,34 +20,49 @@ Phase 2 推奨根拠カード:
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pandas as pd
 import streamlit as st
 
+from src.analysis._adapters import magic_formula_result_to_per_ticker_dict
 from src.analysis.composite import (
+    PRESET_DISPLAY_LABELS,
+    PRESET_RATIONALE,
     CompositeScoreInputs,
     GrowthSubScoreInputs,
     IncomeSubScoreInputs,
     MomentumSubScoreInputs,
-    PRESET_DISPLAY_LABELS,
-    PRESET_RATIONALE,
     QualitySubScoreInputs,
     RiskSubScoreInputs,
     ValueSubScoreInputs,
     compute_composite_score,
 )
+from src.analysis.composite.aggregator import CompositeScoreResult
 from src.analysis.investor_lenses import apply_lenses
 from src.analysis.magic_formula import (
     MagicFormulaResult,
     screen_magic_formula_with_provenance,
 )
+from src.analysis.monte_carlo import (
+    percentiles_for_fan_chart,
+    render_fan_chart_plotly,
+    simulate_gbm_paths,
+)
+from src.analysis.ranking_judge import (
+    RankingResult,
+    RankingSignalBundle,
+    rank_with_claude_batch,
+)
 from src.analysis.sentiment import (
     SentimentResult,
     analyze_sentiment,
 )
+from src.analysis.signal_aggregator import aggregate_signals_for_universe
 from src.config.settings import settings
+from src.dashboard.widgets.ranking_card import render_ranking_card
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDAPIError, EODHDClient
 from src.data.famous_holdings import get_famous_owners, render_owner_badges
@@ -1041,6 +1056,100 @@ def _display_risk_warnings(
     st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
 
 
+def _display_claude_section(
+    ranking_results: list[RankingResult],
+    signal_bundles: list[RankingSignalBundle],
+) -> None:
+    """Claude TOP N 銘柄の詳細カードセクション (Phase 5.4.2)。
+
+    ``settings.ranking_top_detail_count`` (既定 5) 件を ``ranking_score`` 降順で
+    並べ、各銘柄カードに Monte Carlo fan chart (個別銘柄向け簡易シミュレーション)
+    を埋め込む。``fallback_reason`` 付きの結果が混じっている場合は冒頭に縮退件数
+    の warning を表示する (CLAUDE.md §9.4 リスク警告併記)。
+
+    Monte Carlo 設計:
+        - ``start_price=100.0`` の相対値ベースで fan chart を描く
+          (絶対株価は通貨混在 + 銘柄横断比較のノイズになるため避ける)
+        - ``mu`` は ``momentum_12m / 100`` で年率換算した近似値
+          (Phase 6 で realized return に置換予定)
+        - ``sigma=0.25`` 暫定 (Phase 6 で realized vol に置換予定)
+        - ``n_paths=1000``、CLAUDE.md §9.3 「Monte Carlo は最低 1000 パス」準拠
+
+    Args:
+        ranking_results: ``rank_with_claude_batch`` の戻り値要素リスト。
+            ``signal_bundles`` と同順序・同長を呼び出し側が保証する。
+        signal_bundles: ``aggregate_signals_for_universe`` の戻り値。
+    """
+    st.subheader("🤖 Claude による総合判定")
+
+    fallback_count = sum(
+        1 for r in ranking_results if r.fallback_reason is not None
+    )
+    if fallback_count > 0:
+        st.warning(
+            f"⚠️ {fallback_count}/{len(ranking_results)} 銘柄が数式縮退中"
+            "（Claude 判定不可、Stage 1 由来の埋め値で表示）"
+        )
+
+    sorted_pairs = sorted(
+        zip(ranking_results, signal_bundles, strict=True),
+        key=lambda p: p[0].ranking_score,
+        reverse=True,
+    )
+
+    for rank, (result, bundle) in enumerate(
+        sorted_pairs[: settings.ranking_top_detail_count], start=1
+    ):
+        st.markdown(f"### #{rank} — {bundle.ticker}")
+        # Monte Carlo: momentum_12m を mu の近似値として使用 (年率)
+        # sigma は暫定 0.25 (Phase 6 で realized vol に置換予定)
+        mu_value = (
+            float(bundle.momentum_12m) / 100.0
+            if bundle.momentum_12m is not None
+            else 0.0
+        )
+        paths = simulate_gbm_paths(
+            start_price=100.0,  # 相対価格 (基準 100)
+            mu=mu_value,
+            sigma=0.25,
+            days=252,
+            n_paths=1000,
+        )
+        pct_df = percentiles_for_fan_chart(paths)
+        fig = render_fan_chart_plotly(pct_df, bundle.ticker)
+        render_ranking_card(bundle.ticker, result, bundle, fig)
+        st.divider()
+
+    # CLAUDE.md §9.3 一本線予測禁止規約の念押し
+    st.warning(
+        "⚠️ **これは投資助言ではありません。** 最終判断はユーザー自身で行ってください。"
+        "AI 出力は確率分布の参考情報です。"
+    )
+
+    # Provenance expander (CLAUDE.md §9.8.5)
+    # Decimal は ``default=str`` で文字列化することで JSON 直列化可能にする。
+    import dataclasses
+    import json as _json
+
+    with st.expander("ⓘ Provenance — Claude への入力と出力 JSON"):
+        for result, bundle in zip(
+            ranking_results, signal_bundles, strict=True
+        ):
+            st.markdown(f"#### {bundle.ticker}")
+            # asdict は Decimal を Decimal のまま残すため、json.dumps で str 化
+            # してから loads し直して st.json に流す。
+            input_bundle = _json.loads(
+                _json.dumps(dataclasses.asdict(bundle), default=str)
+            )
+            output_result = result.model_dump(mode="json")
+            st.json(
+                {
+                    "input_bundle": input_bundle,
+                    "output_result": output_result,
+                }
+            )
+
+
 def _display_screening_results(
     *,
     result: MagicFormulaResult,
@@ -1052,8 +1161,8 @@ def _display_screening_results(
     enable_news_cards: bool,
     enable_composite: bool,
     analyses: list[tuple[int, str, dict[str, Any], Any]] | None = None,
-    ranking_results: list[Any] | None = None,  # Phase 5.4.2 で実装、現状未使用
-    signal_bundles: list[Any] | None = None,  # Phase 5.4.2 で実装、現状未使用
+    ranking_results: list[RankingResult] | None = None,
+    signal_bundles: list[RankingSignalBundle] | None = None,
 ) -> None:
     """Magic Formula スクリーニング結果の表示ロジック。
 
@@ -1099,7 +1208,13 @@ def _display_screening_results(
             composite_preset=composite_preset,
         )
 
-    # ── 5. リスク警告 (CLAUDE.md §9.4 / §9.7) ───────────────────
+    # ── 5. Claude TOP N 詳細カード (Phase 5.4.2) ─────────────────
+    # Sonnet 判定が成功した場合のみ表示。縮退時は ranking_results=None で
+    # スキップされる (Composite ランキングのみで動作継続)。
+    if ranking_results is not None and signal_bundles is not None:
+        _display_claude_section(ranking_results, signal_bundles)
+
+    # ── 6. リスク警告 (CLAUDE.md §9.4 / §9.7) ───────────────────
     _display_risk_warnings(
         real_mode=real_mode,
         enable_news_cards=enable_news_cards,
@@ -1183,6 +1298,15 @@ if run_button:
             analyses.append((idx + 1, ticker_name, mf_row.to_dict(), analysis))
         progress.empty()
 
+    # Phase 5.4.2: 推奨根拠カード分析結果から sentiment を抽出して
+    # ticker 別 dict に保存 (Sonnet シグナル束の sentiment_results に渡す用)。
+    sentiment_results_dict: dict[str, SentimentResult] = {}
+    if analyses is not None:
+        for _rank, _ticker_name, _mf_dict, _analysis in analyses:
+            if _analysis is not None:
+                _mc, _sent, _df = _analysis
+                sentiment_results_dict[_ticker_name] = _sent
+
     # ───────────────────────────────────────────────
     # 📋 Composite Score「計算」フェーズ (Phase 3.1a)
     # 高コストなファンダ + Momentum 取得は run_button 経路でのみ実行。
@@ -1192,6 +1316,11 @@ if run_button:
     composite_rows: list[dict[str, Any]] = []
     composite_warnings: list[tuple[str, list[Any]]] = []
     radar_data: list[tuple[str, float, dict[str, float]]] = []
+    # Phase 5.4.2: Sonnet 連携用 dict (Composite ループ内で並行構築)
+    # sentiment_results_dict は推奨根拠カード経路で構築済みのものを再利用する
+    # (このブロックの直前で初期化される)。
+    composite_results_dict: dict[str, CompositeScoreResult] = {}
+    momentum_results_dict: dict[str, dict[str, Decimal]] = {}
     # Half-Kelly 暫定パラメータ（保守的、後で実バックテストで上書き）
     _kelly_params_default = KellyParams(
         win_rate=Decimal("0.6"),
@@ -1247,6 +1376,21 @@ if run_button:
                 continue
 
             composite = compute_composite_score(inputs, preset_name=composite_preset)
+            # Phase 5.4.2: Sonnet 連携用に composite / momentum を ticker 別 dict に保存
+            composite_results_dict[ticker_name] = composite
+            if momentum_inputs is not None:
+                momentum_results_dict[ticker_name] = {
+                    "1m": (
+                        momentum_inputs.return_1m
+                        if momentum_inputs.return_1m is not None
+                        else Decimal("0")
+                    ),
+                    "12m": (
+                        momentum_inputs.return_12m
+                        if momentum_inputs.return_12m is not None
+                        else Decimal("0")
+                    ),
+                }
             warning_severity = (
                 "🚨" if any(w.severity == "RED" for w in composite.warnings)
                 else ("⚠️" if composite.warnings else "✅")
@@ -1290,6 +1434,134 @@ if run_button:
         progress.empty()
 
     # ───────────────────────────────────────────────
+    # Phase 5.4.2: Stage 2 Sonnet 連携 + Stage 3 規律強制
+    # Composite ループ後、session_state 保存前に実行する。
+    # 6 skill 統合 → Sonnet ranking judge → Stage 3 純粋関数 (確信度調整 +
+    # Kelly 乗数) で `ranking_results` を構築。失敗時は None で縮退し UI は
+    # Composite ランキングのみで動作継続 (PRD §FR5)。
+    # ───────────────────────────────────────────────
+    ranking_results: list[RankingResult] | None = None
+    signal_bundles: list[RankingSignalBundle] | None = None
+
+    if settings.anthropic_api_key and composite_rows:
+        with st.spinner("🤖 Claude による総合判定を実行中..."):
+            # ----- Step 1: Polymarket マクロ確率取得 (失敗時 空 dict) -----
+            try:
+                from src.data.polymarket_client import (  # noqa: PLC0415
+                    fetch_macro_probabilities,
+                )
+
+                polymarket_macro_raw = fetch_macro_probabilities(
+                    topics=[
+                        "fed_rate_cut_2026",
+                        "us_recession_2026",
+                        "geopolitical_risk",
+                    ]
+                )
+                # MacroProbabilities は dict[str, Decimal] サブクラスなので
+                # そのまま渡せる。空 dict 縮退時は素の dict を渡す。
+                polymarket_macro: dict[str, Decimal] = dict(polymarket_macro_raw)
+            except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退
+                st.warning(
+                    f"⚠️ Polymarket 取得失敗: {type(exc).__name__}、"
+                    "空 dict で続行"
+                )
+                polymarket_macro = {}
+
+            # ----- Step 2: SEC EDGAR 13F QoQ 差分 (全 ticker 共通 view) -----
+            # extract_holdings_delta は ticker 単位で fund 別 delta を返す。
+            # signal_aggregator は全銘柄共通の view を期待するため (handoff
+            # §2.3、Phase 6 で per-ticker view に拡張予定)、代表 ticker
+            # ("SPY") で 1 回だけ取得する素朴な実装に従う (design.md L1368)。
+            fund_holdings_delta: dict[str, dict[str, object]] = {}
+            try:
+                from src.data.sec_edgar import (  # noqa: PLC0415
+                    SECEdgarClient,
+                )
+                from src.data.sec_edgar_13f_diff import (  # noqa: PLC0415
+                    extract_holdings_delta,
+                )
+
+                if settings.sec_edgar_user_agent:
+                    sec_edgar_client = SECEdgarClient(
+                        user_agent=settings.sec_edgar_user_agent
+                    )
+                    fund_holdings_delta = extract_holdings_delta(
+                        "SPY", sec_client=sec_edgar_client
+                    )
+            except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退
+                st.warning(
+                    f"⚠️ 13F 差分取得失敗: {type(exc).__name__}、"
+                    "空 dict で続行"
+                )
+                fund_holdings_delta = {}
+
+            # ----- Step 3: Regime signals (Choppy 縮退で許容) -----
+            # 完全な regime 取得は SPY EOD パイプライン未実装のため Phase 6
+            # 持ち越し。PRD §FR5 多段縮退として Choppy + 空 state_probs で
+            # 続行する (build_signal_bundle 側で吸収される)。
+            regime_signals: dict[str, object] = {
+                "regime": "Choppy",
+                "state_probs": {},
+            }
+
+            # ----- Step 4: シグナル束組み立て + Sonnet 呼び出し -----
+            try:
+                mf_per_ticker = magic_formula_result_to_per_ticker_dict(result)
+                tickers_for_sonnet = [r["_ticker_raw"] for r in composite_rows]
+
+                signal_bundles = aggregate_signals_for_universe(
+                    tickers=tickers_for_sonnet,
+                    exchange=exchange,
+                    composite_results=composite_results_dict,
+                    mf_results=mf_per_ticker,
+                    sentiment_results=sentiment_results_dict,
+                    momentum_results=momentum_results_dict,
+                    polymarket_macro=polymarket_macro,
+                    fund_holdings_delta_by_fund=fund_holdings_delta,
+                    regime_signals=regime_signals,
+                )
+
+                client = get_anthropic_client()
+                ranking_results = rank_with_claude_batch(
+                    signal_bundles,
+                    anthropic_client=client,
+                    cache_dir=Path(settings.cache_dir) / "sonnet_ranking",
+                    model=settings.sonnet_model,
+                    model_version=settings.sonnet_model_version,
+                    ttl_sec=settings.ranking_cache_ttl_sec,
+                )
+            except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退
+                # Anthropic SDK の APIStatusError 401 等を含めて捕捉。
+                # fallback_reason の SDK 例外クラス名露出は handoff §5.6 で
+                # Phase 5.5 に持ち越し既知課題。本 Phase はそのまま表示。
+                import anthropic  # noqa: PLC0415
+
+                if isinstance(exc, anthropic.APIStatusError):
+                    if exc.status_code == 401:
+                        st.error(
+                            "🚨 Claude API key 不正。"
+                            "Composite ランキングのみ表示します。"
+                        )
+                    else:
+                        st.error(
+                            f"🚨 Anthropic API エラー ({exc.status_code})、"
+                            "縮退します。"
+                        )
+                else:
+                    st.error(
+                        f"🚨 Claude 判定全体失敗: {type(exc).__name__}、"
+                        "縮退します。"
+                    )
+                ranking_results = None
+                signal_bundles = None
+    elif not settings.anthropic_api_key:
+        st.info(
+            "ℹ️ ANTHROPIC_API_KEY 未設定のため Claude 判定はスキップ"
+            "（数式ランキングのみ表示）。"
+        )
+
+    # ───────────────────────────────────────────────
     # session_state に保存（§12.3 解消: BUY 後 rerun 経路でも再描画可能に）
     # 計算済みデータ (mf_result / analyses / composite_*) を全て格納し、
     # _display_screening_results() を session_state 経路から再呼び出しできる
@@ -1312,9 +1584,9 @@ if run_button:
         "enable_news_cards": enable_news_cards,
         "enable_composite": enable_composite,
         "exchange": exchange,
-        # Phase 5.4.2 で埋める予定（現状は None で初期化）
-        "ranking_results": None,
-        "signal_bundles": None,
+        # Phase 5.4.2: Sonnet ranking 結果 + シグナル束
+        "ranking_results": ranking_results,
+        "signal_bundles": signal_bundles,
     }
 
     # ───────────────────────────────────────────────
@@ -1330,6 +1602,8 @@ if run_button:
         enable_news_cards=enable_news_cards,
         enable_composite=enable_composite,
         analyses=analyses,
+        ranking_results=ranking_results,
+        signal_bundles=signal_bundles,
     )
 elif "screening_session" in st.session_state:
     # §12.3 解消: BUY フォーム submit 後の rerun 経路 (run_button == False)
