@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     mf_top_n: int = Field(default=5, alias="MF_TOP_N")
     mf_rebalance_quarters: int = Field(default=4, alias="MF_REBALANCE_QUARTERS")
 
+    # ===== Stage 2 Sonnet ranking judge =====
+    # Phase 5.4 — Stage 2 (Sonnet) で Stage 1 通過銘柄をスコアリング・ランキングする際の設定
+    sonnet_model: str = Field(default="claude-sonnet-4-6", alias="SONNET_MODEL")
+    sonnet_model_version: str = Field(
+        default="claude-sonnet-4-6", alias="SONNET_MODEL_VERSION"
+    )  # Phase 5.5 で anthropic.models.list() から動的取得予定
+    ranking_cache_ttl_sec: int = Field(default=86400, alias="RANKING_CACHE_TTL_SEC")
+    ranking_top_detail_count: int = Field(default=5, alias="RANKING_TOP_DETAIL_COUNT")
+
     # ===== Half-Kelly パラメータ =====
     kelly_fraction: float = Field(default=0.5, alias="KELLY_FRACTION")
     kelly_max_position_pct: float = Field(default=0.05, alias="KELLY_MAX_POSITION_PCT")
