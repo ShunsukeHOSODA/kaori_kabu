@@ -824,6 +824,290 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------------------------
+# 結果表示ロジック (§12.3 解消: run_button 経路 + session_state 経路の両方から呼ぶ)
+#
+# run_button 経路で計算した結果は session_state["screening_session"] に保存し、
+# BUY フォーム submit 後の rerun (run_button == False) でも本関数を再呼び出し
+# することでテーブル全体の消失を防ぐ。本関数は描画専門 (純粋関数) で、計算は
+# 呼び出し側 (run_button 経路) の責務。
+# ---------------------------------------------------------------------------
+
+
+def _display_provenance(result: MagicFormulaResult) -> None:
+    """Provenance 開示 expander (CLAUDE.md §9.8.5)。"""
+    with st.expander("ⓘ 出所追跡情報（Provenance）"):
+        st.json(
+            {
+                "calculation_method": result.metadata.calculation_method,
+                "academic_source": result.metadata.academic_source,
+                "calculated_at": result.metadata.calculated_at.isoformat(),
+                "input_data_source": result.metadata.input_data_source,
+                "input_data_period": result.metadata.input_data_period,
+                "input_cache_hit": result.metadata.input_cache_hit,
+                "code_commit": result.metadata.code_commit,
+            }
+        )
+
+
+def _display_magic_formula_table(result: MagicFormulaResult) -> None:
+    """Magic Formula 結果テーブル (上位 N 銘柄の ROC / EY ランキング)。"""
+    display_columns = [
+        "ticker",
+        "magic_formula_score",
+        "roc",
+        "earnings_yield",
+        "roc_rank",
+        "ey_rank",
+    ]
+    if "sector" in result.result.columns:
+        display_columns.append("sector")
+    if "market_cap" in result.result.columns:
+        display_columns.append("market_cap")
+
+    display_df = result.result[display_columns].copy()
+    display_df["roc"] = display_df["roc"].apply(
+        lambda x: f"{float(x) * 100:.2f}%"
+    )
+    display_df["earnings_yield"] = display_df["earnings_yield"].apply(
+        lambda x: f"{float(x) * 100:.2f}%"
+    )
+    if "market_cap" in display_df.columns:
+        display_df["market_cap"] = display_df["market_cap"].apply(
+            lambda x: f"${float(x) / 1e9:,.1f}B" if x is not None else "—"
+        )
+
+    rename_map = {
+        "ticker": "ティッカー",
+        "magic_formula_score": "合算スコア（小さいほど良い）",
+        "roc": "資本利益率(ROC)",
+        "earnings_yield": "益利回り(EY)",
+        "roc_rank": "ROC 順位",
+        "ey_rank": "EY 順位",
+        "sector": "セクター",
+        "market_cap": "時価総額",
+    }
+    display_df = display_df.rename(columns=rename_map)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
+def _display_recommendation_cards(
+    analyses: list[tuple[int, str, dict[str, Any], Any]],
+) -> None:
+    """推奨根拠カード描画 (Phase 2: ニュース・センチメント・レンズ統合)。
+
+    `analyses` は run_button 経路で計算済みの結果リスト。本関数は描画専門で、
+    re-fetch / re-analyze は行わない。
+    """
+    st.subheader(f"📋 上位 {TOP_PICKS_FOR_NEWS} 銘柄の推奨根拠")
+    st.caption(
+        f"Tavily/Exa で 4 系統ニュース取得 + 投資家レンズ "
+        f"({format_lenses_applied(DEFAULT_NEWS_LENSES)}) + Claude Haiku "
+        "でセンチメント分析。「なぜ推すか」の根拠をカードで併記。"
+    )
+
+    for rank, ticker_name, mf_dict, analysis in analyses:
+        if analysis is None:
+            with st.container(border=True):
+                st.markdown(f"### {rank}️⃣ **{ticker_name}**")
+                st.warning(
+                    "⚠️ ニュース・センチメント分析に失敗。"
+                    "API キー / レート制限 / ネットワークを確認してください。"
+                )
+            continue
+        mc, sent, _ = analysis
+        mf_display = {
+            "magic_formula_score": mf_dict.get("magic_formula_score", "—"),
+            "roc": (
+                f"{float(mf_dict['roc']) * 100:.2f}%"
+                if "roc" in mf_dict
+                else "—"
+            ),
+            "earnings_yield": (
+                f"{float(mf_dict['earnings_yield']) * 100:.2f}%"
+                if "earnings_yield" in mf_dict
+                else "—"
+            ),
+            "sector": mf_dict.get("sector", ""),
+        }
+        render_recommendation_card(
+            rank=rank,
+            ticker=ticker_name,
+            magic_formula_row=mf_display,
+            market_context=mc,
+            sentiment=sent,
+            lenses_applied=DEFAULT_NEWS_LENSES,
+        )
+
+
+def _display_composite_section(
+    *,
+    composite_rows: list[dict[str, Any]],
+    composite_warnings: list[tuple[str, list[Any]]],
+    radar_data: list[tuple[str, float, dict[str, float]]],
+    composite_preset: str,
+) -> None:
+    """Composite Score テーブル + 警告 expander + 7 軸レーダー (Phase 3.1a)。"""
+    st.subheader("📋 Composite Score 詳細（投資家視点の総合スコア）")
+    st.caption(
+        f"投資スタイル: **{PRESET_DISPLAY_LABELS[composite_preset]}** — "
+        f"{PRESET_RATIONALE[composite_preset]}"
+    )
+    # §4.2 #3: Half-Kelly 推奨サイズの注記（暫定値の根拠を明示、§9.4 / §9.7）
+    st.info(
+        "📌 **Half-Kelly 推奨** は暫定値で計算: "
+        "**勝率 60%**（Magic Formula 経験則、Greenblatt 2010）/ "
+        "**損益比 2.0**（ATR 2R ストップ設計）/ "
+        "**1 銘柄上限 5%**（Overconfidence 対策、Thorp 2006）。"
+        "実バックテスト結果が揃い次第、銘柄別の実測値で更新予定。"
+    )
+
+    if composite_rows:
+        st.dataframe(
+            pd.DataFrame(composite_rows)
+            .drop(columns=["_ticker_raw"])
+            .sort_values("Composite", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if composite_warnings:
+            with st.expander(
+                f"⚠️ 警告詳細（{len(composite_warnings)} 銘柄）"
+            ):
+                for tk, warns in composite_warnings:
+                    st.markdown(f"**{tk}**")
+                    for w in warns:
+                        icon = (
+                            "🚨" if w.severity == "RED"
+                            else ("⚠️" if w.severity == "AMBER" else "ℹ️")
+                        )
+                        st.markdown(f"- {icon} `{w.code}`: {w.message}")
+        st.caption(
+            "Q=Quality / V=Value / I=Income / G=Growth / R=Risk / "
+            "M=Momentum / S=Sentiment（各 0-100）。"
+            "Composite はプリセット重み付け合算（0-100）。"
+            "詳細設計: `docs/long-term-investment-architecture.md`"
+        )
+
+        # 7 軸レーダーチャート — 上位 3 銘柄を並べて視覚比較
+        top_n_radar = sorted(
+            radar_data, key=lambda r: r[1], reverse=True
+        )[:3]
+        if top_n_radar:
+            st.markdown("##### 🎯 上位銘柄 7 軸レーダーチャート")
+            cols = st.columns(len(top_n_radar))
+            for col, (tk, score, subs) in zip(
+                cols, top_n_radar, strict=False
+            ):
+                with col:
+                    fig = composite_radar_chart(ticker=tk, sub_scores=subs)
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        key=f"radar_{tk}",
+                    )
+                    st.caption(f"Composite: **{score:.1f}** / 100")
+    else:
+        st.info(
+            "Composite Score を計算できる銘柄がありませんでした"
+            "（ファンダ取得失敗 or 必須フィールド欠損）"
+        )
+
+
+def _display_risk_warnings(
+    *,
+    real_mode: bool,
+    enable_news_cards: bool,
+    enable_composite: bool,
+) -> None:
+    """リスク警告メッセージ (CLAUDE.md §9.4 / §9.7)。"""
+    risk_messages = [
+        "**過去パフォーマンス ≠ 将来**: 直近 5 年は SP500 にアンダーパフォーム",
+        "**Value Trap リスク**: 構造不況業種は永久に割安なまま",
+        "**認知バイアス対策**: Confirmation Bias を避け、反対意見も検討すること",
+    ]
+    if not real_mode:
+        risk_messages.insert(
+            0, "**デモデータ**: このページは合成 10 銘柄のサンプルです"
+        )
+    if enable_news_cards:
+        risk_messages.append(
+            "**センチメントは補助情報**: ニュース要約は判断の補助、最終判断は自分で"
+        )
+    if enable_composite and real_mode:
+        risk_messages.append(
+            "**総合スコアは Phase 3.1b 時点の暫定値**: ROIC/WACC・連続増配年数・"
+            "13F 機関投資家保有・株主優待は Phase 3.2 以降で精緻化予定"
+        )
+    st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
+
+
+def _display_screening_results(
+    *,
+    result: MagicFormulaResult,
+    composite_rows: list[dict[str, Any]],
+    composite_warnings: list[tuple[str, list[Any]]],
+    radar_data: list[tuple[str, float, dict[str, float]]],
+    composite_preset: str,
+    real_mode: bool,
+    enable_news_cards: bool,
+    enable_composite: bool,
+    analyses: list[tuple[int, str, dict[str, Any], Any]] | None = None,
+    ranking_results: list[Any] | None = None,  # Phase 5.4.2 で実装、現状未使用
+    signal_bundles: list[Any] | None = None,  # Phase 5.4.2 で実装、現状未使用
+) -> None:
+    """Magic Formula スクリーニング結果の表示ロジック。
+
+    run_button 経路 + session_state 経路の両方から呼べる純粋な描画関数。
+    計算は呼び出し側の責務で、本関数はデータ表示のみ。
+
+    §12.3 解消: BUY フォーム submit による rerun で `run_button == False` に
+    なっても、session_state["screening_session"] に保存した計算済みデータを
+    本関数に流し込めば結果テーブル全体を再描画できる。
+
+    表示順序 (既存挙動を完全保全):
+        1. ⓘ Provenance 開示 (CLAUDE.md §9.8.5)
+        2. Magic Formula 結果テーブル
+        3. 推奨根拠カード (analyses が非 None かつ enable_news_cards のとき)
+        4. Composite Score 詳細 + 警告 expander + 7 軸レーダーチャート
+           (enable_composite & real_mode のとき)
+        5. リスク警告 (CLAUDE.md §9.4 / §9.7)
+
+    Phase 5.4.2 で ranking_results / signal_bundles を埋め込んでも
+    本関数のシグネチャは変えない (両引数とも None 既定値で後方互換)。
+    """
+    st.success(
+        f"✅ Top {len(result.result)} 銘柄を抽出 "
+        f"({result.metadata.calculated_at.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+    )
+
+    # ── 1. Provenance 開示 ───────────────────────────────────────
+    _display_provenance(result)
+
+    # ── 2. Magic Formula 結果テーブル ────────────────────────────
+    _display_magic_formula_table(result)
+
+    # ── 3. 推奨根拠カード (Phase 2) ──────────────────────────────
+    if enable_news_cards and analyses is not None:
+        _display_recommendation_cards(analyses)
+
+    # ── 4. Composite Score 詳細 (Phase 3.1a) ─────────────────────
+    if enable_composite and real_mode:
+        _display_composite_section(
+            composite_rows=composite_rows,
+            composite_warnings=composite_warnings,
+            radar_data=radar_data,
+            composite_preset=composite_preset,
+        )
+
+    # ── 5. リスク警告 (CLAUDE.md §9.4 / §9.7) ───────────────────
+    _display_risk_warnings(
+        real_mode=real_mode,
+        enable_news_cards=enable_news_cards,
+        enable_composite=enable_composite,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 実行
 # ---------------------------------------------------------------------------
 
@@ -870,87 +1154,20 @@ if run_button:
             input_cache_hit=cache_hit_flag,
         )
 
-    st.success(
-        f"✅ Top {len(result.result)} 銘柄を抽出 "
-        f"({result.metadata.calculated_at.strftime('%Y-%m-%d %H:%M:%S UTC')})"
-    )
-
     # ───────────────────────────────────────────────
-    # Provenance 開示（CLAUDE.md §9.8.5）
+    # 推奨根拠カード「計算」フェーズ (Phase 2: ニュース・センチメント・レンズ)
+    # 高コストな分析は run_button 経路でのみ実行し、結果を analyses に格納する。
+    # 表示は _display_screening_results() で session_state 経由から再描画可能。
     # ───────────────────────────────────────────────
-    with st.expander("ⓘ 出所追跡情報（Provenance）"):
-        st.json(
-            {
-                "calculation_method": result.metadata.calculation_method,
-                "academic_source": result.metadata.academic_source,
-                "calculated_at": result.metadata.calculated_at.isoformat(),
-                "input_data_source": result.metadata.input_data_source,
-                "input_data_period": result.metadata.input_data_period,
-                "input_cache_hit": result.metadata.input_cache_hit,
-                "code_commit": result.metadata.code_commit,
-            }
-        )
-
-    # ───────────────────────────────────────────────
-    # 結果テーブル
-    # ───────────────────────────────────────────────
-    display_columns = [
-        "ticker",
-        "magic_formula_score",
-        "roc",
-        "earnings_yield",
-        "roc_rank",
-        "ey_rank",
-    ]
-    if "sector" in result.result.columns:
-        display_columns.append("sector")
-    if "market_cap" in result.result.columns:
-        display_columns.append("market_cap")
-
-    display_df = result.result[display_columns].copy()
-    display_df["roc"] = display_df["roc"].apply(
-        lambda x: f"{float(x) * 100:.2f}%"
-    )
-    display_df["earnings_yield"] = display_df["earnings_yield"].apply(
-        lambda x: f"{float(x) * 100:.2f}%"
-    )
-    if "market_cap" in display_df.columns:
-        display_df["market_cap"] = display_df["market_cap"].apply(
-            lambda x: f"${float(x) / 1e9:,.1f}B" if x is not None else "—"
-        )
-
-    rename_map = {
-        "ticker": "ティッカー",
-        "magic_formula_score": "合算スコア（小さいほど良い）",
-        "roc": "資本利益率(ROC)",
-        "earnings_yield": "益利回り(EY)",
-        "roc_rank": "ROC 順位",
-        "ey_rank": "EY 順位",
-        "sector": "セクター",
-        "market_cap": "時価総額",
-    }
-    display_df = display_df.rename(columns=rename_map)
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-    # ───────────────────────────────────────────────
-    # 推奨根拠カード（Phase 2: ニュース・センチメント・レンズ統合）
-    # ───────────────────────────────────────────────
+    analyses: list[tuple[int, str, dict[str, Any], Any]] | None = None
     if (
         enable_news_cards
         and news_client is not None
         and anthropic_client is not None
     ):
-        st.subheader(f"📋 上位 {TOP_PICKS_FOR_NEWS} 銘柄の推奨根拠")
-        st.caption(
-            f"Tavily/Exa で 4 系統ニュース取得 + 投資家レンズ "
-            f"({format_lenses_applied(DEFAULT_NEWS_LENSES)}) + Claude Haiku "
-            "でセンチメント分析。「なぜ推すか」の根拠をカードで併記。"
-        )
-
         top_picks = result.result.head(TOP_PICKS_FOR_NEWS)
         progress = st.progress(0, text="推奨根拠を分析中...")
-
-        analyses: list[tuple[int, str, dict[str, Any], Any]] = []
+        analyses = []
         for idx, (_, mf_row) in enumerate(top_picks.iterrows()):
             ticker_name = str(mf_row["ticker"])
             progress.progress(
@@ -964,71 +1181,25 @@ if run_button:
                 lenses=DEFAULT_NEWS_LENSES,
             )
             analyses.append((idx + 1, ticker_name, mf_row.to_dict(), analysis))
-
         progress.empty()
 
-        for rank, ticker_name, mf_dict, analysis in analyses:
-            if analysis is None:
-                with st.container(border=True):
-                    st.markdown(f"### {rank}️⃣ **{ticker_name}**")
-                    st.warning(
-                        "⚠️ ニュース・センチメント分析に失敗。"
-                        "API キー / レート制限 / ネットワークを確認してください。"
-                    )
-                continue
-            mc, sent, _ = analysis
-            # market_cap などの Decimal を表示用に整形
-            mf_display = {
-                "magic_formula_score": mf_dict.get("magic_formula_score", "—"),
-                "roc": (
-                    f"{float(mf_dict['roc']) * 100:.2f}%"
-                    if "roc" in mf_dict
-                    else "—"
-                ),
-                "earnings_yield": (
-                    f"{float(mf_dict['earnings_yield']) * 100:.2f}%"
-                    if "earnings_yield" in mf_dict
-                    else "—"
-                ),
-                "sector": mf_dict.get("sector", ""),
-            }
-            render_recommendation_card(
-                rank=rank,
-                ticker=ticker_name,
-                magic_formula_row=mf_display,
-                market_context=mc,
-                sentiment=sent,
-                lenses_applied=DEFAULT_NEWS_LENSES,
-            )
+    # ───────────────────────────────────────────────
+    # 📋 Composite Score「計算」フェーズ (Phase 3.1a)
+    # 高コストなファンダ + Momentum 取得は run_button 経路でのみ実行。
+    # 結果 (composite_rows / composite_warnings / radar_data) を
+    # session_state["screening_session"] に保存し session_state 経路で再利用。
+    # ───────────────────────────────────────────────
+    composite_rows: list[dict[str, Any]] = []
+    composite_warnings: list[tuple[str, list[Any]]] = []
+    radar_data: list[tuple[str, float, dict[str, float]]] = []
+    # Half-Kelly 暫定パラメータ（保守的、後で実バックテストで上書き）
+    _kelly_params_default = KellyParams(
+        win_rate=Decimal("0.6"),
+        win_loss_ratio=Decimal("2.0"),
+    )
+    _portfolio_value_jpy_dec = Decimal(str(portfolio_value_jpy_input))
 
-    # ───────────────────────────────────────────────
-    # 📋 Composite Score 詳細（Phase 3.1a — 世界一投資家網羅）
-    # ───────────────────────────────────────────────
     if enable_composite and real_mode and eodhd_client is not None:
-        st.subheader("📋 Composite Score 詳細（投資家視点の総合スコア）")
-        st.caption(
-            f"投資スタイル: **{PRESET_DISPLAY_LABELS[composite_preset]}** — "
-            f"{PRESET_RATIONALE[composite_preset]}"
-        )
-        # §4.2 #3: Half-Kelly 推奨サイズの注記（暫定値の根拠を明示、§9.4 / §9.7）
-        st.info(
-            "📌 **Half-Kelly 推奨** は暫定値で計算: "
-            "**勝率 60%**（Magic Formula 経験則、Greenblatt 2010）/ "
-            "**損益比 2.0**（ATR 2R ストップ設計）/ "
-            "**1 銘柄上限 5%**（Overconfidence 対策、Thorp 2006）。"
-            "実バックテスト結果が揃い次第、銘柄別の実測値で更新予定。"
-        )
-
-        # Half-Kelly 暫定パラメータ（保守的、後で実バックテストで上書き）
-        _kelly_params_default = KellyParams(
-            win_rate=Decimal("0.6"),
-            win_loss_ratio=Decimal("2.0"),
-        )
-        _portfolio_value_jpy_dec = Decimal(str(portfolio_value_jpy_input))
-
-        composite_rows: list[dict[str, Any]] = []
-        composite_warnings: list[tuple[str, list[Any]]] = []
-        radar_data: list[tuple[str, float, dict[str, float]]] = []
         progress = st.progress(0, text="Composite Score 計算中...")
 
         for idx, (_, mf_row) in enumerate(result.result.iterrows()):
@@ -1118,87 +1289,65 @@ if run_button:
 
         progress.empty()
 
-        # ───────────────────────────────────────────────
-        # session_state に保存（form submit 時の rerun でも BUY フォームを動かすため）
-        # ───────────────────────────────────────────────
-        st.session_state["screening_session"] = {
-            "composite_rows": composite_rows,
-            "composite_preset": composite_preset,
-            "kelly_params_default": _kelly_params_default,
-            "portfolio_value_jpy_dec": _portfolio_value_jpy_dec,
-            "calculated_at_iso": result.metadata.calculated_at.isoformat(),
-            "code_commit": result.metadata.code_commit,
-        }
-
-        if composite_rows:
-            st.dataframe(
-                pd.DataFrame(composite_rows)
-                .drop(columns=["_ticker_raw"])
-                .sort_values("Composite", ascending=False),
-                use_container_width=True,
-                hide_index=True,
-            )
-            if composite_warnings:
-                with st.expander(
-                    f"⚠️ 警告詳細（{len(composite_warnings)} 銘柄）"
-                ):
-                    for tk, warns in composite_warnings:
-                        st.markdown(f"**{tk}**")
-                        for w in warns:
-                            icon = (
-                                "🚨" if w.severity == "RED"
-                                else ("⚠️" if w.severity == "AMBER" else "ℹ️")
-                            )
-                            st.markdown(f"- {icon} `{w.code}`: {w.message}")
-            st.caption(
-                "Q=Quality / V=Value / I=Income / G=Growth / R=Risk / "
-                "M=Momentum / S=Sentiment（各 0-100）。"
-                "Composite はプリセット重み付け合算（0-100）。"
-                "詳細設計: `docs/long-term-investment-architecture.md`"
-            )
-
-            # 7 軸レーダーチャート — 上位 N 銘柄を並べて視覚比較
-            top_n = sorted(
-                radar_data, key=lambda r: r[1], reverse=True
-            )[:3]
-            if top_n:
-                st.markdown("##### 🎯 上位銘柄 7 軸レーダーチャート")
-                cols = st.columns(len(top_n))
-                for col, (tk, score, subs) in zip(cols, top_n, strict=False):
-                    with col:
-                        fig = composite_radar_chart(ticker=tk, sub_scores=subs)
-                        st.plotly_chart(
-                            fig,
-                            use_container_width=True,
-                            key=f"radar_{tk}",
-                        )
-                        st.caption(f"Composite: **{score:.1f}** / 100")
-        else:
-            st.info(
-                "Composite Score を計算できる銘柄がありませんでした"
-                "（ファンダ取得失敗 or 必須フィールド欠損）"
-            )
+    # ───────────────────────────────────────────────
+    # session_state に保存（§12.3 解消: BUY 後 rerun 経路でも再描画可能に）
+    # 計算済みデータ (mf_result / analyses / composite_*) を全て格納し、
+    # _display_screening_results() を session_state 経路から再呼び出しできる
+    # ようにする。Phase 5.4.2 で ranking_results / signal_bundles を追加予定。
+    # ───────────────────────────────────────────────
+    st.session_state["screening_session"] = {
+        # 既存（BUY フォームが参照、後方互換）
+        "composite_rows": composite_rows,
+        "composite_preset": composite_preset,
+        "kelly_params_default": _kelly_params_default,
+        "portfolio_value_jpy_dec": _portfolio_value_jpy_dec,
+        "calculated_at_iso": result.metadata.calculated_at.isoformat(),
+        "code_commit": result.metadata.code_commit,
+        # Phase 5.4.1 新規（_display_screening_results 経由の再描画用）
+        "mf_result": result,
+        "composite_warnings": composite_warnings,
+        "radar_data": radar_data,
+        "analyses": analyses,
+        "real_mode": real_mode,
+        "enable_news_cards": enable_news_cards,
+        "enable_composite": enable_composite,
+        "exchange": exchange,
+        # Phase 5.4.2 で埋める予定（現状は None で初期化）
+        "ranking_results": None,
+        "signal_bundles": None,
+    }
 
     # ───────────────────────────────────────────────
-    # リスク警告（CLAUDE.md §9.4 / §9.7）
+    # 描画 — run_button 経路と session_state 経路で共通化
     # ───────────────────────────────────────────────
-    risk_messages = [
-        "**過去パフォーマンス ≠ 将来**: 直近 5 年は SP500 にアンダーパフォーム",
-        "**Value Trap リスク**: 構造不況業種は永久に割安なまま",
-        "**認知バイアス対策**: Confirmation Bias を避け、反対意見も検討すること",
-    ]
-    if not real_mode:
-        risk_messages.insert(0, "**デモデータ**: このページは合成 10 銘柄のサンプルです")
-    if enable_news_cards:
-        risk_messages.append(
-            "**センチメントは補助情報**: ニュース要約は判断の補助、最終判断は自分で"
-        )
-    if enable_composite and real_mode:
-        risk_messages.append(
-            "**総合スコアは Phase 3.1b 時点の暫定値**: ROIC/WACC・連続増配年数・"
-            "13F 機関投資家保有・株主優待は Phase 3.2 以降で精緻化予定"
-        )
-    st.warning("⚠️ **リスク警告**\n\n- " + "\n- ".join(risk_messages))
+    _display_screening_results(
+        result=result,
+        composite_rows=composite_rows,
+        composite_warnings=composite_warnings,
+        radar_data=radar_data,
+        composite_preset=composite_preset,
+        real_mode=real_mode,
+        enable_news_cards=enable_news_cards,
+        enable_composite=enable_composite,
+        analyses=analyses,
+    )
+elif "screening_session" in st.session_state:
+    # §12.3 解消: BUY フォーム submit 後の rerun 経路 (run_button == False)
+    # 計算済みデータを session_state から取り出して再描画する (re-fetch なし)
+    _ls = st.session_state["screening_session"]
+    _display_screening_results(
+        result=_ls["mf_result"],
+        composite_rows=_ls["composite_rows"],
+        composite_warnings=_ls["composite_warnings"],
+        radar_data=_ls["radar_data"],
+        composite_preset=_ls["composite_preset"],
+        real_mode=_ls["real_mode"],
+        enable_news_cards=_ls["enable_news_cards"],
+        enable_composite=_ls["enable_composite"],
+        analyses=_ls.get("analyses"),
+        ranking_results=_ls.get("ranking_results"),
+        signal_bundles=_ls.get("signal_bundles"),
+    )
 
 # ───────────────────────────────────────────────
 # 🛒 BUY フォーム（session_state 経由、form submit 後の rerun でも動作）
@@ -1335,7 +1484,8 @@ if "screening_session" in st.session_state:
         # 次回 rerun でも表示できるよう session_state に保存
         st.session_state["last_buy_result"] = {"message": _success_msg}
 
-elif not run_button:
+else:
+    # screening_session が未生成 (= 初回起動 or セッションリセット直後) の案内
     st.info("左サイドバーでパラメータを設定し「スクリーニング実行」を押してください。")
 
 
