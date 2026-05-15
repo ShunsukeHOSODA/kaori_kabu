@@ -158,8 +158,10 @@ class TestFetchMacroProbabilities:
         )
         assert http_client.get.call_count == 1
 
-        # キャッシュファイルの mtime を 7 時間前にする
-        provider_dir = tmp_path / "Polymarket"
+        # キャッシュファイルの mtime を 7 時間前にする。
+        # Phase 5.3 review (C-L-1) で PROVIDER_NAME を小文字に統一したため
+        # サブディレクトリも "polymarket" になる。
+        provider_dir = tmp_path / "polymarket"
         for parquet_file in provider_dir.glob("*.parquet"):
             old_time = parquet_file.stat().st_mtime - 7 * 3600
             os.utime(parquet_file, (old_time, old_time))
@@ -228,25 +230,38 @@ class TestFetchMacroProbabilities:
         assert result == {}
         assert http_client.get.call_count == 0
 
-    def test_Provenance_メタデータが_モジュール変数に記録される(
+    def test_Provenance_メタデータが_戻り値に同梱される(
         self, tmp_path: Path, fed_market_response: MagicMock
     ) -> None:
-        """戻り値は dict[str, Decimal] のため、Provenance は
-        モジュール変数 ``_last_metadata`` で公開する（CLAUDE.md §9.8.1）。"""
-        from data import polymarket_client
+        """戻り値 ``MacroProbabilities`` の ``.provenance`` 属性に取得時
+        メタデータが同梱される（CLAUDE.md §9.8.1、スレッドセーフ設計）。
+
+        Phase 5.3 review で「グローバル mutable な ``_last_metadata`` は
+        スレッドセーフでない」と 3 reviewer 一致で指摘されたため、Session 5 で
+        戻り値同梱型に再設計した (P-CRIT-1 / C-H-2 / S-M-2)。
+        """
         from data.cache import ParquetCache
-        from data.polymarket_client import fetch_macro_probabilities
+        from data.polymarket_client import (
+            MacroProbabilities,
+            fetch_macro_probabilities,
+        )
 
         http_client = MagicMock(spec=httpx.Client)
         http_client.get.return_value = fed_market_response
         cache = ParquetCache(base_dir=tmp_path)
 
-        fetch_macro_probabilities(
+        result = fetch_macro_probabilities(
             ["fed_rate_cut_2026"], http_client=http_client, cache=cache
         )
 
-        meta = polymarket_client._last_metadata
-        assert meta["source"] == "Polymarket"
+        # 戻り値は MacroProbabilities (dict[str, Decimal] サブクラス)
+        assert isinstance(result, MacroProbabilities)
+        assert isinstance(result, dict)  # 後方互換性 (dict サブクラス)
+        assert result["fed_rate_cut_2026"] == Decimal("0.62")
+
+        # Provenance は .provenance 属性経由でアクセス
+        meta = result.provenance
+        assert meta["source"] == "polymarket"
         assert "fetched_at" in meta
         assert meta["endpoint"] == "https://gamma-api.polymarket.com/markets"
         assert "params_hash" in meta

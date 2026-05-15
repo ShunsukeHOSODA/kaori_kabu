@@ -44,14 +44,46 @@ CLAUDE.md §9.8 Provenance 規約:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Final, Literal
+from typing import Final, Literal, Protocol
 
 import pandas as pd
 
-from analysis.ranking_judge import RankingSignalBundle
-from analysis.regime import detect_regime_with_provenance
+from .ranking_judge import RankingSignalBundle
+from .regime import detect_regime_with_provenance
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.3 review (P-H-3) 対策: build_signal_bundle の Any 引数を Protocol 化
+# ---------------------------------------------------------------------------
+
+
+class CompositeResultProtocol(Protocol):
+    """Composite Score 計算結果が満たすべき構造的契約。"""
+
+    composite_score: float
+    sub_scores: dict[str, float]
+    preset_name: str
+
+
+class MagicFormulaResultProtocol(Protocol):
+    """Magic Formula 計算結果が満たすべき構造的契約。"""
+
+    score: float
+    roc_pct: Decimal
+    earnings_yield_pct: Decimal
+
+
+class SentimentResultProtocol(Protocol):
+    """ニュースセンチメント計算結果が満たすべき構造的契約。"""
+
+    sentiment_score: Decimal
+    confidence: Decimal
+    key_themes: tuple[str, ...]
 
 # ---------------------------------------------------------------------------
 # 定数
@@ -175,8 +207,15 @@ def build_regime_signals(
             "regime": regime_label,
             "state_probs": _onehot_state_probs(regime_label),
         }
-    except Exception:  # noqa: BLE001 — PRD §FR5 多段縮退規約
-        # HMM 失敗時の縮退。原因例外は呼び出し側のロギング層で扱う想定。
+    except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退規約
+        # Phase 5.3 review (P-H-4 / C-M-3 / S-M-1) 対策: silent failure
+        # 防止のため warning ログを残す。何度も縮退が発生していることを
+        # 後から発見できるようにする (handoff §6.1 と同じ視点)。
+        logger.warning(
+            "build_regime_signals: HMM 計算失敗、Choppy 縮退を返却: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
         return {
             "regime": _FALLBACK_REGIME,
             "state_probs": dict(_FALLBACK_PROBS),
@@ -193,9 +232,9 @@ def build_signal_bundle(
     ticker: str,
     exchange: Literal["US", "JP"],
     sector: str | None = None,
-    composite_result: Any,
-    mf_result: Any | None,
-    sentiment_result: Any,
+    composite_result: CompositeResultProtocol,
+    mf_result: MagicFormulaResultProtocol | None,
+    sentiment_result: SentimentResultProtocol,
     momentum_1m: Decimal | None = None,
     momentum_12m: Decimal | None = None,
     polymarket_macro: dict[str, Decimal] | None = None,
@@ -270,9 +309,9 @@ def aggregate_signals_for_universe(
     tickers: list[str],
     *,
     exchange: Literal["US", "JP"],
-    composite_results: dict[str, Any],
-    mf_results: dict[str, Any],
-    sentiment_results: dict[str, Any],
+    composite_results: dict[str, CompositeResultProtocol],
+    mf_results: dict[str, MagicFormulaResultProtocol],
+    sentiment_results: dict[str, SentimentResultProtocol],
     momentum_results: dict[str, dict[str, Decimal]],
     polymarket_macro: dict[str, Decimal],
     fund_holdings_delta_by_fund: dict[str, dict[str, object]],
@@ -292,8 +331,13 @@ def aggregate_signals_for_universe(
         sentiment_results: ``{ticker: sentiment_result}`` (必須)
         momentum_results: ``{ticker: {"1m": Decimal, "12m": Decimal}}``
         polymarket_macro: マクロ確率 (全ユニバース共通)
-        fund_holdings_delta_by_fund: 13F 差分 (全ユニバース共通、
-            ticker per ファンドビューに事前変換済みの想定)
+        fund_holdings_delta_by_fund: 13F QoQ 差分。**この引数は現状すべての
+            ticker に同じ dict を割り当てる**仕様 (Phase 5.3 review C-H-1
+            指摘: 引数名が「ファンド軸 dict」を示唆するが実態は全銘柄共通の
+            「ticker 単位の差分 view」を期待する点が混乱を招く)。呼び出し側は
+            ticker ごとに :func:`data.sec_edgar_13f_diff.extract_holdings_delta`
+            を事前呼び出しした結果をマージして渡すこと。Phase 5.4 UI 統合時に
+            ``dict[ticker, dict[fund, delta]]`` の per-ticker view に拡張予定。
         regime_signals: :func:`build_regime_signals` の戻り値 (全ユニバース共通)
         sector_by_ticker: ティッカー → セクター名のマップ (省略時 None)
 

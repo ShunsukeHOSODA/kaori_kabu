@@ -29,13 +29,14 @@ from __future__ import annotations
 import logging
 from typing import Any, Final
 
+import httpx
 import pandas as pd
 
 from .famous_holdings import TICKER_TO_ISSUER_NAME
 from .sec_edgar import (
-    DEFAULT_CACHE_TTL_SEC,
     SECEdgarClient,
     compute_qoq_diff,
+    normalize_cik,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,21 +184,36 @@ def extract_holdings_delta(
             含まれる場合は当たる）。
     """
     funds = tracked_funds if tracked_funds is not None else TRACKED_FUNDS
-    cache_ttl_sec = (
-        _ttl_days_to_seconds(cache_ttl_days)
-        if cache_ttl_days != 90
-        else DEFAULT_CACHE_TTL_SEC
-    )
+    # Phase 5.3 review (P-H-1 / C-M-2) で「``!= 90`` の魔法数分岐は
+    # ``DEFAULT_CACHE_TTL_SEC`` 変更時に無音で乖離する」と指摘されたため
+    # 常に変換関数を使う形に簡素化。
+    cache_ttl_sec = _ttl_days_to_seconds(cache_ttl_days)
 
     result: dict[str, dict[str, Any]] = {}
     for fund_name, cik in funds.items():
+        # Phase 5.3 review (S-L-2) 対策: CIK 形式を最上流で検証し、
+        # 不正値で SEC EDGAR への HTTP 404 を発生させないよう構造的に遮断。
+        try:
+            normalize_cik(cik)
+        except (ValueError, TypeError) as exc:
+            logger.warning(
+                "extract_holdings_delta: invalid CIK skipped: fund=%s "
+                "cik=%r error=%s",
+                fund_name,
+                cik,
+                exc,
+            )
+            continue
+
         try:
             # limit=2 で最新 + 前期
             history = sec_client.get_13f_history(
                 cik, limit=2, cache_ttl_sec=cache_ttl_sec
             )
-        except Exception as exc:  # noqa: BLE001
-            # HTTPError / NotFound / Parse / その他全部 skip
+        except (httpx.HTTPError, OSError, ValueError, KeyError) as exc:
+            # Phase 5.3 review (P-H-2 / C-H-3) 対策: ``except Exception`` の
+            # 過剰捕捉を 4 種に絞り込み。AttributeError / TypeError 等の
+            # 実装バグは確実に bubble up させて早期検出。
             logger.warning(
                 "extract_holdings_delta: skipping %s (CIK=%s): %s: %s",
                 fund_name,
@@ -239,7 +255,10 @@ def extract_holdings_delta(
 
         try:
             diff = compute_qoq_diff(current_df, previous_df)
-        except Exception as exc:  # noqa: BLE001
+        except (ValueError, KeyError, TypeError) as exc:
+            # Phase 5.3 review (P-H-2 / C-H-3) 対策: pure function なので
+            # 想定失敗は ValueError/KeyError/TypeError に絞られる。実装
+            # バグ由来の AttributeError 等は bubble up させて早期検出。
             logger.warning(
                 "extract_holdings_delta: compute_qoq_diff failed for %s: %s",
                 fund_name,

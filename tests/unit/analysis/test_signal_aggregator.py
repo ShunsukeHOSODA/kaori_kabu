@@ -240,10 +240,15 @@ def test_DataFrame_close列なし時は最初の列を使う(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestBuildSignalBundle:
-    """6 skill 統合 build_signal_bundle の単体テスト (design.md L1099-1135)。"""
+    """6 skill 統合 build_signal_bundle の単体テスト (design.md L1099-1135)。
 
-    @pytest.mark.unit
+    Phase 5.3 review (P-M-4 / C-M-4) で「test_polymarket_client.py 等は
+    クラスレベルに ``@pytest.mark.unit`` が付与されているのに本クラスはメソッド
+    レベル」と一貫性欠如が指摘されたため、クラスレベル統一に変更した。
+    """
+
     def test_6_skill_統合で_RankingSignalBundle_返却(self) -> None:
         """正常系: 6 skill 全結果が揃っているケースで RankingSignalBundle を構築。"""
         from unittest.mock import MagicMock
@@ -308,7 +313,6 @@ class TestBuildSignalBundle:
         assert bundle.regime_state_probs["Bull"] == Decimal("0.6")
         assert bundle.fetched_at.tzinfo is not None  # UTC aware
 
-    @pytest.mark.unit
     def test_skill_失敗時に_空_dict_None_で_continue(self) -> None:
         """縮退系: mf_result=None / regime_signals=None でも安全に bundle 構築。"""
         from unittest.mock import MagicMock
@@ -347,10 +351,10 @@ class TestBuildSignalBundle:
         assert bundle.regime_state_probs == {}
 
 
+@pytest.mark.unit
 class TestAggregateSignalsForUniverse:
     """aggregate_signals_for_universe の単体テスト (Phase 5.3.1)。"""
 
-    @pytest.mark.unit
     def test_2_銘柄_universe_で_順序保持_skip_なし(self) -> None:
         """全 ticker が composite_results / sentiment_results に揃っているケース。"""
         from unittest.mock import MagicMock
@@ -393,7 +397,6 @@ class TestAggregateSignalsForUniverse:
         assert all(b.magic_formula_score is None for b in bundles)
         assert all(b.regime == "Bull" for b in bundles)
 
-    @pytest.mark.unit
     def test_composite_欠損_ticker_は_skip(self) -> None:
         """composite_results に存在しない ticker は skip して bundle 構築をスキップ。"""
         from unittest.mock import MagicMock

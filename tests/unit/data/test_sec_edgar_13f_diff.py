@@ -114,6 +114,56 @@ class TestExtractHoldingsDeltaActions:
         assert result["Berkshire_Hathaway"]["action"] == "EXIT"
         assert result["Berkshire_Hathaway"]["value_change_usd"] == -80_000_000
 
+    def test_DECREASE_前期より今期が小さい(self) -> None:
+        """Phase 5.3 review (P-L-4) 対策: 5 action 区分のうち DECREASE
+        カバレッジ追加。前期 100M → 今期 60M で減持判定。"""
+        from data.sec_edgar import SECEdgarClient
+        from data.sec_edgar_13f_diff import extract_holdings_delta
+
+        current = _make_holding_df(
+            [{"cusip": "037833100", "name_of_issuer": "APPLE INC", "value_usd": 60_000_000}]
+        )
+        previous = _make_holding_df(
+            [{"cusip": "037833100", "name_of_issuer": "APPLE INC", "value_usd": 100_000_000}]
+        )
+
+        sec_client = MagicMock(spec=SECEdgarClient)
+        sec_client.get_13f_history.return_value = [current, previous]
+
+        result = extract_holdings_delta(
+            "AAPL",
+            sec_client=sec_client,
+            tracked_funds={"Berkshire_Hathaway": "0001067983"},
+        )
+
+        assert result["Berkshire_Hathaway"]["action"] == "DECREASE"
+        assert result["Berkshire_Hathaway"]["value_change_usd"] == -40_000_000
+
+    def test_HOLD_前期と今期が同額(self) -> None:
+        """Phase 5.3 review (P-L-4) 対策: 5 action 区分のうち HOLD
+        カバレッジ追加。前期 = 今期 = 50M で保持判定。"""
+        from data.sec_edgar import SECEdgarClient
+        from data.sec_edgar_13f_diff import extract_holdings_delta
+
+        current = _make_holding_df(
+            [{"cusip": "037833100", "name_of_issuer": "APPLE INC", "value_usd": 50_000_000}]
+        )
+        previous = _make_holding_df(
+            [{"cusip": "037833100", "name_of_issuer": "APPLE INC", "value_usd": 50_000_000}]
+        )
+
+        sec_client = MagicMock(spec=SECEdgarClient)
+        sec_client.get_13f_history.return_value = [current, previous]
+
+        result = extract_holdings_delta(
+            "AAPL",
+            sec_client=sec_client,
+            tracked_funds={"Berkshire_Hathaway": "0001067983"},
+        )
+
+        assert result["Berkshire_Hathaway"]["action"] == "HOLD"
+        assert result["Berkshire_Hathaway"]["value_change_usd"] == 0
+
 
 # ============================================================
 # extract_holdings_delta: ticker が無いケース
