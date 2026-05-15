@@ -16,9 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 
-from src.portfolio.decision_log import append_decision
+from src.portfolio.decision_log import ClaudeRankingDict, append_decision
 from src.strategies.kelly import KellyParams, build_kelly_recommendation
 
 
@@ -74,7 +73,7 @@ class BuyOrderRequest:
     additional_rationale: str = ""
     stop_loss_atr_jpy: Decimal | None = None
     code_commit: str | None = None
-    claude_ranking: dict[str, Any] | None = None
+    claude_ranking: ClaudeRankingDict | None = None
 
 
 def submit_buy_order(

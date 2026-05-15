@@ -66,12 +66,33 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     import pandas as pd
 
     from analysis.sentiment import SentimentResult
+
+
+class ClaudeRankingDict(TypedDict, total=False):
+    """:meth:`RankingResult.model_dump(mode="json")` の JSON 直列化済 dict 構造 (Phase 5.4.3)。
+
+    全フィールド optional (``total=False``) — Sonnet 縮退時に欠損する可能性あり。
+    Decision Log の ``claude_ranking`` カラムに格納される dict のスキーマを
+    型レベルで明示することで、UI 側 / 集計層での safe access を可能にする。
+    """
+
+    ranking_score: int
+    recommendation_summary: str
+    supporting_signals: list[str]
+    risk_signals: list[str]
+    counter_view: str
+    lens_views: dict[str, str]
+    confidence: str
+    confidence_adjusted: str
+    kelly_multiplier: str
+    fallback_reason: str | None
+    metadata: dict[str, Any]
 
 
 def append_decision(
@@ -87,7 +108,7 @@ def append_decision(
     code_commit: str | None = None,
     news_context: dict[str, Any] | None = None,
     kelly_recommendation: dict[str, Any] | None = None,
-    claude_ranking: dict[str, Any] | None = None,
+    claude_ranking: ClaudeRankingDict | None = None,
 ) -> Path:
     """売買判断を JSONL に 1 行追記（append-only）。
 

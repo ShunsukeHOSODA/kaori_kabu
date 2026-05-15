@@ -19,9 +19,12 @@ Phase 2 推奨根拠カード:
 
 from __future__ import annotations
 
+import dataclasses
+import json
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import httpx
 import pandas as pd
@@ -257,6 +260,20 @@ def _to_decimal_or_none(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (ValueError, ArithmeticError, TypeError):
         return None
+
+
+def _decimal_default(obj: object) -> str:
+    """JSON シリアライザ: ``Decimal`` / ``datetime`` → ``str`` 変換 (Provenance 用)。
+
+    ``json.dumps(..., default=_decimal_default)`` で
+    :class:`decimal.Decimal` / :class:`datetime.datetime` を文字列化する。
+    Phase 5.4.4 で Claude セクションの Provenance expander から呼び出される。
+    """
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Not JSON serializable: {type(obj).__name__}")
 
 
 def build_composite_inputs_from_fundamentals(
@@ -1102,18 +1119,21 @@ def _display_claude_section(
     ):
         st.markdown(f"### #{rank} — {bundle.ticker}")
         # Monte Carlo: momentum_12m を mu の近似値として使用 (年率)
-        # sigma は暫定 0.25 (Phase 6 で realized vol に置換予定)
+        # CLAUDE.md §9.1 準拠: Decimal 演算で完結してから simulate_gbm_paths の
+        # ``mu: float`` 引数のため最後だけ float 化する。
         mu_value = (
-            float(bundle.momentum_12m) / 100.0
+            float(bundle.momentum_12m / Decimal("100"))
             if bundle.momentum_12m is not None
             else 0.0
         )
+        # TODO(Phase 6): sigma を realized vol、start_price を実価格に置換 (handoff §5.4)
         paths = simulate_gbm_paths(
             start_price=100.0,  # 相対価格 (基準 100)
             mu=mu_value,
             sigma=0.25,
-            days=252,
-            n_paths=1000,
+            days=settings.mc_horizon_days,
+            n_paths=settings.mc_simulations,
+            seed=42,  # CLAUDE.md §9.8 Provenance: 決定論性確保
         )
         pct_df = percentiles_for_fan_chart(paths)
         fig = render_fan_chart_plotly(pct_df, bundle.ticker)
@@ -1127,10 +1147,7 @@ def _display_claude_section(
     )
 
     # Provenance expander (CLAUDE.md §9.8.5)
-    # Decimal は ``default=str`` で文字列化することで JSON 直列化可能にする。
-    import dataclasses
-    import json as _json
-
+    # Decimal / datetime は ``_decimal_default`` で文字列化することで JSON 直列化可能にする。
     with st.expander("ⓘ Provenance — Claude への入力と出力 JSON"):
         for result, bundle in zip(
             ranking_results, signal_bundles, strict=True
@@ -1138,8 +1155,8 @@ def _display_claude_section(
             st.markdown(f"#### {bundle.ticker}")
             # asdict は Decimal を Decimal のまま残すため、json.dumps で str 化
             # してから loads し直して st.json に流す。
-            input_bundle = _json.loads(
-                _json.dumps(dataclasses.asdict(bundle), default=str)
+            input_bundle = json.loads(
+                json.dumps(dataclasses.asdict(bundle), default=_decimal_default)
             )
             output_result = result.model_dump(mode="json")
             st.json(
@@ -1342,7 +1359,11 @@ if run_button:
                 fundamentals = yfinance_client.get_fundamentals(
                     ticker_name, exchange=ticker_exchange
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — UI フォールバック
+                st.warning(
+                    f"⚠️ {ticker_name} ファンダ取得失敗 "
+                    f"({type(exc).__name__})、スキップ"
+                )
                 continue
 
             # 現在価格は EOD 取得が高コストなので、ファンダの 52w 価格を代用
@@ -1484,8 +1505,11 @@ if run_button:
 
                 if settings.sec_edgar_user_agent:
                     sec_edgar_client = SECEdgarClient(
-                        user_agent=settings.sec_edgar_user_agent
+                        user_agent=settings.sec_edgar_user_agent,
+                        cache=ParquetCache(base_dir=settings.cache_dir),
                     )
+                    # TODO(Phase 6): per-ticker view に拡張予定 (handoff §2.3)
+                    # 現在は全銘柄共通の SPY 代替 view を使用
                     fund_holdings_delta = extract_holdings_delta(
                         "SPY", sec_client=sec_edgar_client
                     )
@@ -1510,9 +1534,15 @@ if run_button:
                 mf_per_ticker = magic_formula_result_to_per_ticker_dict(result)
                 tickers_for_sonnet = [r["_ticker_raw"] for r in composite_rows]
 
+                # UI sidebar は ``["US", "TO"]`` を扱うが、aggregate_signals_for_universe
+                # は ``Literal["US", "JP"]`` を期待する。"TO" は東証なので "JP" に正規化。
+                _exchange_for_sonnet: Literal["US", "JP"] = (
+                    "JP" if exchange == "TO" else cast(Literal["US"], "US")
+                )
+
                 signal_bundles = aggregate_signals_for_universe(
                     tickers=tickers_for_sonnet,
-                    exchange=exchange,
+                    exchange=_exchange_for_sonnet,
                     composite_results=composite_results_dict,
                     mf_results=mf_per_ticker,
                     sentiment_results=sentiment_results_dict,
@@ -1522,10 +1552,10 @@ if run_button:
                     regime_signals=regime_signals,
                 )
 
-                client = get_anthropic_client()
+                # 既に L627 で取得済みの ``anthropic_client`` を再利用 (P-L-3)
                 ranking_results = rank_with_claude_batch(
                     signal_bundles,
-                    anthropic_client=client,
+                    anthropic_client=anthropic_client,
                     cache_dir=Path(settings.cache_dir) / "sonnet_ranking",
                     model=settings.sonnet_model,
                     model_version=settings.sonnet_model_version,

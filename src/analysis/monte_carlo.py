@@ -29,6 +29,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from numpy.typing import NDArray
 
 # 1 年あたりの営業日数 (米国・日本市場の概数)。
 # GBM の離散化単位 dt = 1 / TRADING_DAYS_PER_YEAR。
@@ -46,7 +47,7 @@ def simulate_gbm_paths(
     days: int = 252,
     n_paths: int = 1000,
     seed: int = 42,
-) -> np.ndarray:
+) -> NDArray[np.float64]:
     """幾何ブラウン運動 (GBM) で価格パスを生成する。
 
     Args:
@@ -82,7 +83,7 @@ def simulate_gbm_paths(
 
 
 def percentiles_for_fan_chart(
-    paths: np.ndarray,
+    paths: NDArray[np.float64],
     percentiles: tuple[int, ...] = DEFAULT_PERCENTILES,
 ) -> pd.DataFrame:
     """価格パス配列から各日のパーセンタイル系列を計算して DataFrame で返す。
