@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Final
 
-from src.analysis._anthropic_types import AnthropicLike
+from src.analysis.anthropic_types import AnthropicLike
 
 logger = logging.getLogger(__name__)
 

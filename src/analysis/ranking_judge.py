@@ -24,7 +24,7 @@ from typing import Any, Final, Literal
 import anthropic
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.analysis._anthropic_types import AnthropicLike
+from src.analysis.anthropic_types import AnthropicLike
 from src.analysis._common import extract_json
 from src.analysis._provenance import get_current_git_commit
 

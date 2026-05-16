@@ -37,7 +37,7 @@ import streamlit as st
 logger = logging.getLogger(__name__)
 
 from src.analysis._adapters import magic_formula_result_to_per_ticker_dict
-from src.analysis._anthropic_types import AnthropicLike
+from src.analysis.anthropic_types import AnthropicLike
 from src.analysis._sonnet_model_resolver import resolve_sonnet_model_version
 from src.analysis.composite import (
     CompositeScoreInputs,
@@ -773,8 +773,18 @@ def _run_sonnet_stage(
     Anthropic key 不在 / Composite ゼロ件 / 各 step 失敗時は ``(None, None)``
     で縮退し UI は Composite ランキングのみで動作継続 (PRD §FR5)。
     """
-    if not settings.anthropic_api_key or not composite_rows:
-        if not settings.anthropic_api_key:
+    # Phase 6.3 reviewer (python-r MEDIUM-2) fix: anthropic_client is None を
+    # 明示的にガード条件に含める。02_screener.get_anthropic_client は
+    # api_key 不在時に None を返すため、anthropic_client is None と
+    # not settings.anthropic_api_key は同値だが、mypy/pyright 観点で
+    # 型 narrowing を明示しないと後続の anthropic_client.messages.create() で
+    # AnthropicLike | None を経由するルートが flag される。
+    if (
+        anthropic_client is None
+        or not settings.anthropic_api_key
+        or not composite_rows
+    ):
+        if anthropic_client is None or not settings.anthropic_api_key:
             st.info(
                 "ℹ️ ANTHROPIC_API_KEY 未設定のため Claude 判定はスキップ"
                 "（数式ランキングのみ表示）。"

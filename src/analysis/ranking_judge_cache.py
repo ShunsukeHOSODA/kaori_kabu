@@ -27,6 +27,7 @@ from typing import Any, Final
 
 from pydantic import ValidationError
 
+from .anthropic_types import AnthropicLike
 from .ranking_judge import (
     DEFAULT_MODEL,
     DEFAULT_MODEL_VERSION,

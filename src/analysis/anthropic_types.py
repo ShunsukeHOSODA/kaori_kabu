@@ -16,7 +16,7 @@ foundation の上に、``anthropic.Anthropic`` を Protocol 化することで�
       / ``model.id`` 等のアクセスは現状の duck-typing に委ねる。
 
 利用例:
-    >>> from src.analysis._anthropic_types import AnthropicLike
+    >>> from src.analysis.anthropic_types import AnthropicLike
     >>>
     >>> def call_sonnet(*, client: AnthropicLike) -> str:
     ...     response = client.messages.create(

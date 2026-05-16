@@ -27,6 +27,7 @@ import pandas as pd
 
 from src.analysis._common import extract_json
 from src.analysis._provenance import get_current_git_commit
+from src.analysis.anthropic_types import AnthropicLike
 
 # ---------------------------------------------------------------------------
 # 定数
