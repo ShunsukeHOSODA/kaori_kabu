@@ -9,27 +9,33 @@ CLAUDE.md §9.1 (Decimal 演算で完結してから最後だけ float 化) を�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
 
 import pytest
 
 from src.dashboard.views._screener_compute import compute_mu_for_monte_carlo
 
 
-def _make_bundle_with_momentum(momentum: Decimal | None) -> Any:
-    """``momentum_12m`` だけを持つ最小 stub bundle (duck typing)。
+@dataclass(frozen=True)
+class _BundleStub:
+    """``compute_mu_for_monte_carlo`` が参照する最小フィールドだけを持つ型付き stub。
+
+    2 reviewer 並列指摘 (code-r MEDIUM-2 / python-r LOW-2): ``type: ignore``
+    が必要な動的属性代入を避け、mypy/pyright が将来の RankingSignalBundle
+    フィールド変更を検出できるよう dataclass で明示する。
+    """
+
+    momentum_12m: Decimal | None
+
+
+def _make_bundle_with_momentum(momentum: Decimal | None) -> _BundleStub:
+    """``momentum_12m`` だけを持つ最小 stub bundle を返す。
 
     ``compute_mu_for_monte_carlo`` は ``bundle.momentum_12m`` のみ参照するため、
     RankingSignalBundle 全フィールドを構築する必要はない。
     """
-
-    class _Stub:
-        pass
-
-    stub = _Stub()
-    stub.momentum_12m = momentum  # type: ignore[attr-defined]
-    return stub
+    return _BundleStub(momentum_12m=momentum)
 
 
 @pytest.mark.unit

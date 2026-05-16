@@ -54,7 +54,8 @@ def make_buy_request(
 
     ``trigger`` を override しない場合は ``make_screener_trigger()`` のデフォルト
     ScreenerTrigger が埋まる。kelly_params / portfolio_value_jpy は全テスト共通の
-    ``KellyParams(win_rate=0.6, win_loss_ratio=2.0)`` / ``Decimal("1000000")`` を採用。
+    ``KellyParams(win_rate=Decimal("0.6"), win_loss_ratio=Decimal("2.0"))`` /
+    ``Decimal("1000000")`` を採用 (CLAUDE.md §9.1 Decimal 一貫)。
     """
 
     def _make(**overrides: Any) -> Any:

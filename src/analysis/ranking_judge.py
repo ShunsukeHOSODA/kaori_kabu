@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final, Literal
 
+import anthropic
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.analysis._common import extract_json
@@ -715,8 +716,6 @@ def _classify_api_exception(exc: BaseException) -> FallbackReason:
         と ``RateLimitError`` は ``APIStatusError`` のサブクラスのため、
         ``isinstance`` 判定の順序を維持すること。
     """
-    import anthropic  # noqa: PLC0415
-
     if isinstance(exc, anthropic.AuthenticationError):
         return "auth_error"
     if isinstance(exc, anthropic.RateLimitError):
@@ -746,8 +745,12 @@ def _build_fallback_result(
 
     Args:
         bundle: 入力シグナル束（``composite_score`` を埋め値として利用）。
-        reason: 縮退理由文字列（``"api_error: ..."`` /
-            ``"schema_error: ..."`` / ``"forbidden_pattern_detected"``）。
+        reason: 縮退理由文字列。``FallbackReason`` Literal 値
+            （``"auth_error"`` / ``"rate_limit"`` / ``"api_status_error"`` /
+            ``"network_error"`` / ``"unknown_api_error"`` / ``"schema_error"`` /
+            ``"forbidden_pattern_detected"``）を指定する。
+            Phase 6.2 (handoff §4.6) 前の ``"api_error: <ExcClass>"`` 形式は
+            ``_classify_api_exception`` 経由で抽象 enum 値に変換するため廃止。
         started_at: 元の呼び出し開始時刻（UTC、Provenance 用）。
 
     Returns:
@@ -816,9 +819,14 @@ def rank_single_with_claude(
     3 つの recovery path（PRD §FR5 多段縮退）で `RankingResult` を必ず返却:
 
     1. **API 例外** (network / 401 / 429 / 503 / SDK error / JSON 抽出失敗):
-       ``_build_fallback_result(reason=f"api_error: {type(exc).__name__}")``
+       ``_classify_api_exception(exc)`` で抽象 enum 値
+       （``"auth_error"`` / ``"rate_limit"`` / ``"api_status_error"`` /
+       ``"network_error"`` / ``"unknown_api_error"``）に変換して
+       ``_build_fallback_result`` に渡す。SDK 例外クラス名は
+       ``logger.warning`` で内部記録される（handoff §4.6、UI 漏洩防止）。
     2. **Pydantic スキーマ違反** (未定義 extra / 範囲外 / 一本線予測フィールド):
-       ``_build_fallback_result(reason=f"schema_error: {type(exc).__name__}")``
+       ``_build_fallback_result(reason="schema_error")``。
+       詳細クラス名 (``ValidationError`` 等) は ``logger.warning`` で記録。
     3. **一本線予測パターン検出** (``validate_no_price_predictions`` 違反):
        ``_build_fallback_result(reason="forbidden_pattern_detected")``
 
