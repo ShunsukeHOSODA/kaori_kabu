@@ -33,6 +33,20 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# 公開 API — Phase 6.4.B/C で同じ schema 抽出パターンを継承するためのテンプレート。
+# leading underscore のシンボル (``_TICKER_PATTERN``) は本モジュール内部実装の
+# 隠蔽限定で公開しない (Phase 6.3 の ``_FALLBACK_REASON_LABELS`` 公開規律と整合、
+# cross-module import なしの private シンボルは underscore 維持)。
+__all__ = [
+    "FORBIDDEN_PATTERNS",
+    "FORBIDDEN_PREDICTION_FIELDS",
+    "RankingMetadata",
+    "RankingResult",
+    "RankingSignalBundle",
+    "contains_forbidden_pattern",
+]
+
+
 # ---------------------------------------------------------------------------
 # 内部定数 — ticker 文字種制約
 # ---------------------------------------------------------------------------
@@ -283,14 +297,38 @@ class RankingSignalBundle:
     fetched_at: datetime
 
     def __post_init__(self) -> None:
-        """ticker の文字種を ``_TICKER_PATTERN`` で検証。
+        """構造検証 — ticker 文字種 + 数値フィールドの範囲ガード。
 
         security review H-1 対策: ``_cache_path`` の SHA256 鍵に ticker prefix を
         付与している都合、``../`` 等の path traversal 文字が混入すると
         ``cache_dir`` 外へファイル書き込み可能になる。最上流で構造的に遮断する。
+
+        範囲ガード (Phase 6.4.A reviewer 2 視点一致 MEDIUM fix):
+            - ``composite_score``: 0-100 (Composite Score 仕様の値域)
+            - ``sentiment_score``: -1〜+1 (Tetlock 2007 流ニュースセンチメント)
+            - ``sentiment_confidence``: 0-1 (確信度の値域)
+
+            これらは仕様上明確な範囲を持つフィールドのみ。``roc_pct`` /
+            ``earnings_yield_pct`` / ``momentum_*`` は現実の市場で負値もあり得る
+            ため範囲ガードを設けない。Pydantic 側の ``RankingResult`` 下流ガード
+            に頼らず、入力 bundle 段階で構造的に弾くことで Sonnet API 呼び出し
+            前に invariant violation を検出する。
         """
         if not _TICKER_PATTERN.fullmatch(self.ticker):
             raise ValueError(
                 f"ticker contains forbidden characters (A-Z 0-9 . - のみ許容): "
                 f"{self.ticker!r}"
+            )
+        if not 0.0 <= self.composite_score <= 100.0:
+            raise ValueError(
+                f"composite_score must be in [0, 100]: {self.composite_score}"
+            )
+        if not Decimal("-1") <= self.sentiment_score <= Decimal("1"):
+            raise ValueError(
+                f"sentiment_score must be in [-1, 1]: {self.sentiment_score}"
+            )
+        if not Decimal("0") <= self.sentiment_confidence <= Decimal("1"):
+            raise ValueError(
+                f"sentiment_confidence must be in [0, 1]: "
+                f"{self.sentiment_confidence}"
             )
