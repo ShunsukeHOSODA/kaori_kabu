@@ -876,8 +876,10 @@ def _run_sonnet_stage(
             return ranking_results, signal_bundles
         except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退
             # Anthropic SDK の APIStatusError 401 等を含めて捕捉。
-            # fallback_reason の SDK 例外クラス名露出は handoff §5.6 で
-            # Phase 5.5 に持ち越し既知課題。本 Phase はそのまま表示。
+            # fallback_reason への SDK 例外クラス名露出は Phase 6.2 で
+            # ranking_judge._classify_api_exception により解消済 (handoff §4.6)。
+            # 本箇所 (バッチ全体失敗の st.error 直接表示) の type(exc).__name__
+            # 露出は handoff §4.6 派生として Phase 6.3 持ち越し。
             import anthropic  # noqa: PLC0415
 
             if isinstance(exc, anthropic.APIStatusError):
@@ -897,3 +899,24 @@ def _run_sonnet_stage(
                     "縮退します。"
                 )
             return None, None
+
+
+def compute_mu_for_monte_carlo(bundle: RankingSignalBundle) -> float:
+    """RankingSignalBundle の 12 ヶ月モメンタムを Monte Carlo の ``mu`` 引数に変換。
+
+    Args:
+        bundle: ``momentum_12m`` を持つ RankingSignalBundle。
+            ``momentum_12m`` は年率パーセント (例: ``Decimal('12.5')`` = +12.5%)。
+
+    Returns:
+        :func:`simulate_gbm_paths` の ``mu: float`` 引数で使う相対値 (0.125)。
+        ``momentum_12m`` が ``None`` の場合は ``0.0`` を返す。
+
+    Note:
+        CLAUDE.md §9.1: Decimal 演算で完結してから、Monte Carlo の
+        ``mu: float`` 引数のため最後だけ float 化する。
+        handoff §4.16: display 層から計算ロジックを分離するための薄い helper。
+    """
+    if bundle.momentum_12m is None:
+        return 0.0
+    return float(bundle.momentum_12m / Decimal("100"))

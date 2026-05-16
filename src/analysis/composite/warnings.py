@@ -15,6 +15,7 @@ Composite Score がいくら高くても警告がある銘柄はユーザーに�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal
 
 from .subscores.income import IncomeSubScoreResult
@@ -77,7 +78,7 @@ def evaluate_warnings(
                 severity="AMBER",
                 code="PAYOUT_HIGH",
                 message=(
-                    f"配当性向 {float(income.payout_ratio) * 100:.0f}% "
+                    f"配当性向 {income.payout_ratio * Decimal('100'):.0f}% "
                     "は業種別閾値の severe を超過、減配リスク"
                 ),
             )

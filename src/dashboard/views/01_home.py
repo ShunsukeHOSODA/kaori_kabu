@@ -327,7 +327,7 @@ if evaluate_button:
             ec2.metric(
                 "含み損益",
                 f"¥{int(pnl):,}",
-                delta=f"{float(pnl_pct) * 100:+.2f}%",
+                delta=f"{pnl_pct * Decimal('100'):+.2f}%",
             )
             ec3.metric(
                 "適用為替（USD/JPY）",
@@ -344,7 +344,7 @@ if evaluate_button:
                         "現在価格": f"¥{float(v.current_price_jpy):,.0f}",
                         "評価額": f"¥{int(v.market_value_jpy):,}",
                         "含み損益": f"¥{int(v.unrealized_pnl_jpy):,}",
-                        "損益率": f"{float(v.unrealized_pnl_pct) * 100:+.2f}%",
+                        "損益率": f"{v.unrealized_pnl_pct * Decimal('100'):+.2f}%",
                     }
                     for v in valuations
                 ]

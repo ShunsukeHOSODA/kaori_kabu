@@ -48,6 +48,19 @@ _DISCLAIMER: Final[str] = (
     "⚠️ AI 判定は確率分布の参考情報です。最終判断はユーザー自身で。"
 )
 
+# fallback_reason enum → 人間可読日本語ラベル (handoff §4.6 派生)
+# UI には抽象化された enum 値ではなく日本語表記を出す。
+# ranking_judge._classify_api_exception の返り値と整合させる。
+_FALLBACK_REASON_LABELS: Final[dict[str, str]] = {
+    "auth_error": "認証エラー (API キー失効の可能性)",
+    "rate_limit": "レート制限 (短時間に過剰リクエスト)",
+    "api_status_error": "API ステータスエラー",
+    "network_error": "ネットワークエラー",
+    "unknown_api_error": "不明な API エラー",
+    "schema_error": "Sonnet 応答スキーマ違反",
+    "forbidden_pattern_detected": "禁止パターン検出 (一本線予測等)",
+}
+
 
 # ---------------------------------------------------------------------------
 # 内部ヘルパー（純粋関数、HTML 文字列生成）
@@ -126,8 +139,11 @@ def render_ranking_card(
         # 1. 縮退時の警告 + ヘッダー
         # ----------------------------------------------------------------
         if ranking_result.fallback_reason is not None:
+            fallback_label = _FALLBACK_REASON_LABELS.get(
+                ranking_result.fallback_reason, ranking_result.fallback_reason
+            )
             st.warning(
-                f"⚠️ Claude 判定縮退中 (理由: {ranking_result.fallback_reason})"
+                f"⚠️ Claude 判定縮退中 (理由: {fallback_label})"
                 "  数式スコアのみで判断中、信頼度は低めです。"
             )
 

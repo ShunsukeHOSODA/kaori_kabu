@@ -38,6 +38,7 @@ from src.analysis.monte_carlo import (
 from src.analysis.ranking_judge import RankingResult, RankingSignalBundle
 from src.analysis.sentiment import SentimentResult
 from src.config.settings import settings
+from src.dashboard.views._screener_compute import compute_mu_for_monte_carlo
 from src.dashboard.views._screener_session import (
     DEFAULT_NEWS_LENSES,
     TOP_PICKS_FOR_NEWS,
@@ -472,14 +473,9 @@ def _display_claude_section(
         sorted_pairs[: settings.ranking_top_detail_count], start=1
     ):
         st.markdown(f"### #{rank} — {bundle.ticker}")
-        # Monte Carlo: momentum_12m を mu の近似値として使用 (年率)
-        # CLAUDE.md §9.1 準拠: Decimal 演算で完結してから simulate_gbm_paths の
-        # ``mu: float`` 引数のため最後だけ float 化する。
-        mu_value = (
-            float(bundle.momentum_12m / Decimal("100"))
-            if bundle.momentum_12m is not None
-            else 0.0
-        )
+        # Monte Carlo: momentum_12m を mu の近似値として使用 (年率)。
+        # 計算は compute 層の compute_mu_for_monte_carlo に集約 (handoff §4.16)。
+        mu_value = compute_mu_for_monte_carlo(bundle)
         # TODO(Phase 6): sigma を realized vol、start_price を実価格に置換 (handoff §5.4)
         paths = simulate_gbm_paths(
             start_price=100.0,  # 相対価格 (基準 100)

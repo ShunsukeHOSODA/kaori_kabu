@@ -825,6 +825,14 @@ class TestRankSingleWithClaude:
 
     @pytest.mark.unit
     def test_API_例外時_Composite_埋め_fallback(self, make_bundle: Any) -> None:
+        """API 例外時に fallback_reason が立ち、ranking_score が composite_score を採用すること。
+
+        Phase 6.2 (handoff §4.6) で fallback_reason は閉じた enum 値
+        (``auth_error`` / ``rate_limit`` / ``unknown_api_error`` 等) のみを
+        格納するよう変更。SDK 例外クラス名は ``logger.warning`` で内部記録され、
+        UI には漏れない。plain ``Exception`` は ``_classify_api_exception`` で
+        ``"unknown_api_error"`` に分類される。
+        """
         from unittest.mock import MagicMock
 
         from src.analysis.ranking_judge import rank_single_with_claude
@@ -834,8 +842,7 @@ class TestRankSingleWithClaude:
         result = rank_single_with_claude(
             make_bundle(composite_score=72.5), anthropic_client=client
         )
-        assert result.fallback_reason is not None
-        assert "api_error" in result.fallback_reason
+        assert result.fallback_reason == "unknown_api_error"
         # composite_score を int 化
         assert result.ranking_score == 72
 
@@ -880,11 +887,14 @@ class TestRankSingleWithClaude:
     def test_schema_error_時_fallback(self, make_bundle: Any) -> None:
         """Sonnet が valid JSON だが Pydantic 制約違反を返した場合、
 
-        ``schema_error:`` で始まる fallback_reason が立つこと。
+        ``"schema_error"`` の fallback_reason が立つこと。
         ここでは ``ranking_score=999`` (0-100 範囲外) を返させて
         ValidationError を意図的に発生させる。``_extract_json`` が
         ValueError を出すケースは api_error path で捕捉されるため、
         schema_error path 単独の発火を担保するには valid JSON が必要。
+        Phase 6.2 (handoff §4.6): SDK 例外クラス名 (ValidationError 等) は
+        ``logger.warning`` で内部記録され、UI には ``"schema_error"`` の
+        閉じた enum 値のみ渡る。
         """
         from unittest.mock import MagicMock
 
@@ -916,8 +926,72 @@ class TestRankSingleWithClaude:
         client = MagicMock()
         client.messages.create.return_value = _R()
         result = rank_single_with_claude(make_bundle(), anthropic_client=client)
-        assert result.fallback_reason is not None
-        assert result.fallback_reason.startswith("schema_error:")
+        assert result.fallback_reason == "schema_error"
+
+    @pytest.mark.unit
+    def test_classify_api_exception_auth_error(self) -> None:
+        """anthropic.AuthenticationError → "auth_error" 分類 (handoff §4.6)。
+
+        anthropic SDK の Exception 階層は ``__new__`` を override しているため
+        ``object.__new__`` は使えない (TypeError: not safe)。
+        親 ``__init__`` を skip するサブクラスを使う。
+        """
+        import anthropic
+
+        from src.analysis.ranking_judge import _classify_api_exception
+
+        class _AuthStub(anthropic.AuthenticationError):
+            def __init__(self) -> None:  # noqa: D401
+                pass
+
+        assert _classify_api_exception(_AuthStub()) == "auth_error"
+
+    @pytest.mark.unit
+    def test_classify_api_exception_rate_limit(self) -> None:
+        """anthropic.RateLimitError → "rate_limit" 分類 (handoff §4.6)。"""
+        import anthropic
+
+        from src.analysis.ranking_judge import _classify_api_exception
+
+        class _RateLimitStub(anthropic.RateLimitError):
+            def __init__(self) -> None:
+                pass
+
+        assert _classify_api_exception(_RateLimitStub()) == "rate_limit"
+
+    @pytest.mark.unit
+    def test_classify_api_exception_api_status_error(self) -> None:
+        """anthropic.APIStatusError (Auth/RateLimit 以外) → "api_status_error"。"""
+        import anthropic
+
+        from src.analysis.ranking_judge import _classify_api_exception
+
+        # AuthenticationError / RateLimitError のサブクラスではない APIStatusError
+        # 派生クラスを使用 (e.g., InternalServerError)
+        class _ServerErrorStub(anthropic.InternalServerError):
+            def __init__(self) -> None:
+                pass
+
+        assert _classify_api_exception(_ServerErrorStub()) == "api_status_error"
+
+    @pytest.mark.unit
+    def test_classify_api_exception_network_error(self) -> None:
+        """ConnectionError / TimeoutError → "network_error" 分類 (handoff §4.6)。"""
+        from src.analysis.ranking_judge import _classify_api_exception
+
+        assert _classify_api_exception(ConnectionError()) == "network_error"
+        assert _classify_api_exception(TimeoutError()) == "network_error"
+
+    @pytest.mark.unit
+    def test_classify_api_exception_unknown_api_error(self) -> None:
+        """plain Exception → "unknown_api_error" 分類 (handoff §4.6)。
+
+        UI には SDK exception クラス名が漏れず、閉じた enum 値だけが渡る。
+        """
+        from src.analysis.ranking_judge import _classify_api_exception
+
+        assert _classify_api_exception(Exception("any")) == "unknown_api_error"
+        assert _classify_api_exception(ValueError("v")) == "unknown_api_error"
 
     @pytest.mark.unit
     def test_bundle_hash_決定論性(self, make_bundle: Any) -> None:

@@ -543,10 +543,17 @@ def _format_macro(macro: dict[str, Decimal]) -> str:
     Returns:
         ``- {key}: {value*100:.1f}%`` を行頭 ``-`` で連結した markdown。
         ``macro`` が空辞書なら ``"- (データなし)"`` を返す。
+
+    Note:
+        CLAUDE.md §9.1: ``float`` を経由しない。``_format_optional`` docstring と
+        同じ理由で、``str(float)`` の IEEE 754 丸めが Anthropic Prompt Caching の
+        byte-identical ヒット保証を破るため、Decimal 一貫で乗算する。
     """
     if not macro:
         return "- (データなし)"
-    return "\n".join(f"- {k}: {float(v) * 100:.1f}%" for k, v in macro.items())
+    return "\n".join(
+        f"- {k}: {v * Decimal('100'):.1f}%" for k, v in macro.items()
+    )
 
 
 def _format_optional(value: object) -> str:
@@ -671,6 +678,56 @@ def _compute_bundle_hash(bundle: RankingSignalBundle) -> str:
     }
     serialized = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Fallback reason 分類 helper — UI 漏洩防止 (handoff §4.6)
+# ---------------------------------------------------------------------------
+
+
+FallbackReason = Literal[
+    "auth_error",
+    "rate_limit",
+    "api_status_error",
+    "network_error",
+    "unknown_api_error",
+    "schema_error",
+    "forbidden_pattern_detected",
+]
+
+
+def _classify_api_exception(exc: BaseException) -> FallbackReason:
+    """Anthropic SDK / Python 標準例外を閉じた enum 値に分類する (handoff §4.6)。
+
+    Args:
+        exc: 任意の例外 (Anthropic SDK の例外 / ConnectionError 等)。
+
+    Returns:
+        UI 露出可能な抽象化された理由文字列。詳細なクラス名 (``AuthenticationError``
+        等) は呼び出し側の ``logger.warning`` で内部記録され、UI には enum 値
+        だけが渡る。
+
+    Note:
+        以前は ``f"api_error: {type(exc).__name__}"`` を直接 ``fallback_reason``
+        に格納していたが、``AuthenticationError`` 等の SDK クラス名が UI に
+        漏れて「API キー失効」のような内部状態を露出していた (handoff §4.6)。
+        本 helper でクラス名 → 抽象 enum 値に変換する。``AuthenticationError``
+        と ``RateLimitError`` は ``APIStatusError`` のサブクラスのため、
+        ``isinstance`` 判定の順序を維持すること。
+    """
+    import anthropic  # noqa: PLC0415
+
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "auth_error"
+    if isinstance(exc, anthropic.RateLimitError):
+        return "rate_limit"
+    if isinstance(exc, anthropic.APIStatusError):
+        return "api_status_error"
+    if isinstance(
+        exc, anthropic.APIConnectionError | ConnectionError | TimeoutError
+    ):
+        return "network_error"
+    return "unknown_api_error"
 
 
 def _build_fallback_result(
@@ -805,9 +862,17 @@ def rank_single_with_claude(
         text = response.content[0].text
         parsed = extract_json(text, context="ranking judge response")
     except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退、Anthropic SDK の多様な例外型を一括受け
+        reason = _classify_api_exception(exc)
+        logger.warning(
+            "Sonnet API call failed: ticker=%s reason=%s exc_type=%s exc_msg=%s",
+            bundle.ticker,
+            reason,
+            type(exc).__name__,
+            str(exc),
+        )
         return _build_fallback_result(
             bundle,
-            reason=f"api_error: {type(exc).__name__}",
+            reason=reason,
             started_at=started_at,
         )
 
@@ -848,9 +913,15 @@ def rank_single_with_claude(
             metadata=raw_metadata,
         )
     except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退、ValidationError 等を一括受け
+        logger.warning(
+            "Sonnet response schema error: ticker=%s exc_type=%s exc_msg=%s",
+            bundle.ticker,
+            type(exc).__name__,
+            str(exc),
+        )
         return _build_fallback_result(
             bundle,
-            reason=f"schema_error: {type(exc).__name__}",
+            reason="schema_error",
             started_at=started_at,
         )
 
