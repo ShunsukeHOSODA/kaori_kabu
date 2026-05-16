@@ -25,8 +25,8 @@ from typing import Any
 
 import pandas as pd
 
-from analysis._common import extract_json
-from analysis._provenance import get_current_git_commit
+from src.analysis._common import extract_json
+from src.analysis._provenance import get_current_git_commit
 
 # ---------------------------------------------------------------------------
 # 定数

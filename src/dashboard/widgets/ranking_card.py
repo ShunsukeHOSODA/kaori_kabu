@@ -24,7 +24,7 @@ from typing import Final
 import plotly.graph_objects as go
 import streamlit as st
 
-from analysis.ranking_judge import RankingResult, RankingSignalBundle
+from src.analysis.ranking_judge import RankingResult, RankingSignalBundle
 
 # ---------------------------------------------------------------------------
 # 定数（色・文言）

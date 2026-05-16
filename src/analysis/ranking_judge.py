@@ -23,8 +23,8 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from analysis._common import extract_json
-from analysis._provenance import get_current_git_commit
+from src.analysis._common import extract_json
+from src.analysis._provenance import get_current_git_commit
 
 logger = logging.getLogger(__name__)
 
