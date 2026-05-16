@@ -489,6 +489,33 @@ def compute_kelly_multiplier(ranking_score: int) -> Decimal:
     return Decimal("0.0")
 
 
+def compute_mu_for_monte_carlo(bundle: RankingSignalBundle) -> float:
+    """RankingSignalBundle の 12 ヶ月モメンタムを Monte Carlo の ``mu`` 引数に変換。
+
+    Stage 3 純粋関数。``RankingSignalBundle`` の owner と同居させることで
+    dashboard 層 → analysis 層への依存方向を正しく保つ
+    (Phase 6.3 §4.1 派生、reviewer HIGH-2 解消)。
+
+    Args:
+        bundle: ``momentum_12m`` を持つ RankingSignalBundle。
+            ``momentum_12m`` は年率パーセント (例: ``Decimal('12.5')`` = +12.5%)。
+
+    Returns:
+        :func:`monte_carlo.simulate_gbm_paths` の ``mu: float`` 引数で使う
+        相対値 (0.125)。``momentum_12m`` が ``None`` の場合は ``0.0`` を返す。
+
+    Note:
+        CLAUDE.md §9.1: Decimal 演算で完結してから、Monte Carlo の
+        ``mu: float`` 引数のため最後だけ float 化する。
+        handoff §4.16 で display 層から compute 層へ移管した薄い helper を、
+        Phase 6.3 で更に analysis 層 (本モジュール) へ移管した
+        (handoff §2.4、reviewer HIGH-2)。
+    """
+    if bundle.momentum_12m is None:
+        return 0.0
+    return float(bundle.momentum_12m / Decimal("100"))
+
+
 # ---------------------------------------------------------------------------
 # build_ranking_user_message — Sonnet 4.6 user message builder
 # (Prompt Caching 安定化のため markdown 構造を決定論的に固定)
@@ -695,6 +722,25 @@ FallbackReason = Literal[
     "schema_error",
     "forbidden_pattern_detected",
 ]
+
+
+# fallback_reason enum → 人間可読日本語ラベル (handoff §4.6 / Phase 6.3 §4.2 派生)。
+# UI には抽象化された enum 値ではなく日本語表記を出す。
+# ``Final[dict[FallbackReason, str]]`` で型レベル網羅性を強制
+# （新 Literal 値を追加した際 mypy/pyright が key 未登録を検出）。
+# Phase 6.3 で ``widgets/ranking_card.py`` から本モジュールに移管し、
+# FallbackReason Literal の真理値と同じ場所に集約することで、
+# ``_screener_compute.py`` / ``ranking_card.py`` の両 consumer が
+# 単一情報源を共有する（循環 import 回避、handoff §2.3）。
+_FALLBACK_REASON_LABELS: Final[dict[FallbackReason, str]] = {
+    "auth_error": "認証エラー (API キー失効の可能性)",
+    "rate_limit": "レート制限 (短時間に過剰リクエスト)",
+    "api_status_error": "API ステータスエラー",
+    "network_error": "ネットワークエラー",
+    "unknown_api_error": "不明な API エラー",
+    "schema_error": "Sonnet 応答スキーマ違反",
+    "forbidden_pattern_detected": "禁止パターン検出 (一本線予測等)",
+}
 
 
 def _classify_api_exception(exc: BaseException) -> FallbackReason:

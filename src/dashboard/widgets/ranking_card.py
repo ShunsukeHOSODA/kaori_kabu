@@ -24,7 +24,11 @@ from typing import Final
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.analysis.ranking_judge import RankingResult, RankingSignalBundle
+from src.analysis.ranking_judge import (
+    _FALLBACK_REASON_LABELS,
+    RankingResult,
+    RankingSignalBundle,
+)
 
 # ---------------------------------------------------------------------------
 # 定数（色・文言）
@@ -48,18 +52,9 @@ _DISCLAIMER: Final[str] = (
     "⚠️ AI 判定は確率分布の参考情報です。最終判断はユーザー自身で。"
 )
 
-# fallback_reason enum → 人間可読日本語ラベル (handoff §4.6 派生)
-# UI には抽象化された enum 値ではなく日本語表記を出す。
-# ranking_judge._classify_api_exception の返り値と整合させる。
-_FALLBACK_REASON_LABELS: Final[dict[str, str]] = {
-    "auth_error": "認証エラー (API キー失効の可能性)",
-    "rate_limit": "レート制限 (短時間に過剰リクエスト)",
-    "api_status_error": "API ステータスエラー",
-    "network_error": "ネットワークエラー",
-    "unknown_api_error": "不明な API エラー",
-    "schema_error": "Sonnet 応答スキーマ違反",
-    "forbidden_pattern_detected": "禁止パターン検出 (一本線予測等)",
-}
+# fallback_reason enum → 人間可読日本語ラベル mapping は Phase 6.3 で
+# ``src/analysis/ranking_judge.py`` に移管した（handoff §4.6 派生、§2.3）。
+# 本モジュールは単一情報源として ``_FALLBACK_REASON_LABELS`` を import する。
 
 
 # ---------------------------------------------------------------------------

@@ -1006,6 +1006,46 @@ class TestRankSingleWithClaude:
         assert len(hash1) == 64
 
 
+class TestFallbackReasonLabelsCoverage:
+    """Phase 6.3 §4.2 派生 (reviewer LOW-1): _FALLBACK_REASON_LABELS の網羅性検証。
+
+    ``FallbackReason`` Literal の全値が ``_FALLBACK_REASON_LABELS`` のキーに
+    含まれることを ``typing.get_args`` で構造的に検証する。新しい Literal 値を
+    追加した際は本テストが落ちて、UI ラベル追加忘れを機械的に検出する
+    （handoff §2.3「両 consumer の単一情報源」規律の保険）。
+    """
+
+    @pytest.mark.unit
+    def test_全_Literal_値が_ラベル_mapping_に存在(self) -> None:
+        from typing import get_args
+
+        from src.analysis.ranking_judge import (
+            _FALLBACK_REASON_LABELS,
+            FallbackReason,
+        )
+
+        literal_values = set(get_args(FallbackReason))
+        label_keys = set(_FALLBACK_REASON_LABELS.keys())
+        missing = literal_values - label_keys
+        extra = label_keys - literal_values
+        assert not missing, (
+            f"FallbackReason Literal 値が _FALLBACK_REASON_LABELS に未登録: "
+            f"{sorted(missing)}"
+        )
+        assert not extra, (
+            f"_FALLBACK_REASON_LABELS に Literal 値以外のキーが混入: "
+            f"{sorted(extra)}"
+        )
+
+    @pytest.mark.unit
+    def test_全ラベルが非空文字列(self) -> None:
+        """UI 表示で「空ラベル」が出るのを防ぐ静的ガード。"""
+        from src.analysis.ranking_judge import _FALLBACK_REASON_LABELS
+
+        for key, label in _FALLBACK_REASON_LABELS.items():
+            assert label.strip(), f"_FALLBACK_REASON_LABELS[{key!r}] が空文字列"
+
+
 class TestRankWithClaudeBatch:
     """Task 5.2.8 — rank_with_claude_batch + 24h キャッシュ I/O の TDD テスト。
 

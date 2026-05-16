@@ -35,10 +35,13 @@ from src.analysis.monte_carlo import (
     render_fan_chart_plotly,
     simulate_gbm_paths,
 )
-from src.analysis.ranking_judge import RankingResult, RankingSignalBundle
+from src.analysis.ranking_judge import (
+    RankingResult,
+    RankingSignalBundle,
+    compute_mu_for_monte_carlo,
+)
 from src.analysis.sentiment import SentimentResult
 from src.config.settings import settings
-from src.dashboard.views._screener_compute import compute_mu_for_monte_carlo
 from src.dashboard.views._screener_session import (
     DEFAULT_NEWS_LENSES,
     TOP_PICKS_FOR_NEWS,

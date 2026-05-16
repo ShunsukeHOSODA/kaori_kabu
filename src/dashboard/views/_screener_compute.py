@@ -55,8 +55,10 @@ from src.analysis.magic_formula import (
     screen_magic_formula_with_provenance,
 )
 from src.analysis.ranking_judge import (
+    _FALLBACK_REASON_LABELS,
     RankingResult,
     RankingSignalBundle,
+    _classify_api_exception,
     rank_with_claude_batch,
 )
 from src.analysis.sentiment import (
@@ -875,48 +877,30 @@ def _run_sonnet_stage(
             )
             return ranking_results, signal_bundles
         except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退
-            # Anthropic SDK の APIStatusError 401 等を含めて捕捉。
-            # fallback_reason への SDK 例外クラス名露出は Phase 6.2 で
-            # ranking_judge._classify_api_exception により解消済 (handoff §4.6)。
-            # 本箇所 (バッチ全体失敗の st.error 直接表示) の type(exc).__name__
-            # 露出は handoff §4.6 派生として Phase 6.3 持ち越し。
-            import anthropic  # noqa: PLC0415
-
-            if isinstance(exc, anthropic.APIStatusError):
-                if exc.status_code == 401:
-                    st.error(
-                        "🚨 Claude API key 不正。"
-                        "Composite ランキングのみ表示します。"
-                    )
-                else:
-                    st.error(
-                        f"🚨 Anthropic API エラー ({exc.status_code})、"
-                        "縮退します。"
-                    )
-            else:
-                st.error(
-                    f"🚨 Claude 判定全体失敗: {type(exc).__name__}、"
-                    "縮退します。"
-                )
+            # Phase 6.3 §4.3 派生 (handoff §4.3):
+            # _classify_api_exception + _FALLBACK_REASON_LABELS で
+            # SDK 例外クラス名 / status_code の UI 漏洩を抽象化。
+            # ranking_judge.rank_single_with_claude 内部の path 1 fallback と
+            # 同じ抽象化規律を、バッチ全体失敗の外側 catch にも適用する。
+            # 詳細な例外型と status_code は logger.warning で内部記録。
+            reason = _classify_api_exception(exc)
+            status_code = getattr(exc, "status_code", None)
+            logger.warning(
+                "Claude 判定全体失敗: reason=%s exc_type=%s status_code=%s exc_msg=%s",
+                reason,
+                type(exc).__name__,
+                status_code,
+                str(exc),
+            )
+            label = _FALLBACK_REASON_LABELS.get(reason, reason)
+            st.error(
+                f"🚨 Claude 判定全体失敗 ({label})、"
+                "Composite ランキングのみ表示します。"
+            )
             return None, None
 
 
-def compute_mu_for_monte_carlo(bundle: RankingSignalBundle) -> float:
-    """RankingSignalBundle の 12 ヶ月モメンタムを Monte Carlo の ``mu`` 引数に変換。
-
-    Args:
-        bundle: ``momentum_12m`` を持つ RankingSignalBundle。
-            ``momentum_12m`` は年率パーセント (例: ``Decimal('12.5')`` = +12.5%)。
-
-    Returns:
-        :func:`simulate_gbm_paths` の ``mu: float`` 引数で使う相対値 (0.125)。
-        ``momentum_12m`` が ``None`` の場合は ``0.0`` を返す。
-
-    Note:
-        CLAUDE.md §9.1: Decimal 演算で完結してから、Monte Carlo の
-        ``mu: float`` 引数のため最後だけ float 化する。
-        handoff §4.16: display 層から計算ロジックを分離するための薄い helper。
-    """
-    if bundle.momentum_12m is None:
-        return 0.0
-    return float(bundle.momentum_12m / Decimal("100"))
+# compute_mu_for_monte_carlo は Phase 6.3 で ``src/analysis/ranking_judge.py`` に
+# 移管した (handoff §4.1 派生、reviewer HIGH-2 解消)。
+# RankingSignalBundle owner と同居させることで dashboard 層 → analysis 層への
+# 依存方向を正しくし、analysis 層内で完結する純粋変換 helper にした。
