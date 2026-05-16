@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -199,6 +200,45 @@ def _display_provenance(result: MagicFormulaResult) -> None:
         )
 
 
+_NumericOrNone = Decimal | float | int | None
+
+
+def _is_missing(x: object) -> bool:
+    """欠損値判定 (None / NaN / inf / pd.NA / Decimal NaN/inf すべて吸収)。
+
+    Phase 6.1 review (code-reviewer + python-reviewer 2 視点一致) で
+    ``float('inf')`` / ``pd.NA`` / ``Decimal('NaN')`` がガード漏れすると
+    指摘されたため統一ヘルパーに集約。``pd.isna`` は ``float('inf')`` を
+    ``False`` 扱いするため ``math.isinf`` で明示判定する。
+    """
+    if x is None:
+        return True
+    if isinstance(x, Decimal):
+        return x.is_nan() or x.is_infinite()
+    if isinstance(x, float):
+        return math.isnan(x) or math.isinf(x)
+    try:
+        return bool(pd.isna(x))
+    except (TypeError, ValueError):
+        return False
+
+
+def _format_decimal_pct(x: _NumericOrNone) -> str:
+    """Decimal/数値を百分率文字列に変換 (CLAUDE.md §9.1: float を経由しない)。"""
+    if _is_missing(x):
+        return "—"
+    pct = Decimal(str(x)) * Decimal("100")
+    return f"{pct:.2f}%"
+
+
+def _format_market_cap_usd_billion(x: _NumericOrNone) -> str:
+    """時価総額 (USD) を ``$NNN.NB`` 表示に整形 (CLAUDE.md §9.1: float を経由しない)。"""
+    if _is_missing(x):
+        return "—"
+    billion = Decimal(str(x)) / Decimal("1000000000")
+    return f"${billion:,.1f}B"
+
+
 def _display_magic_formula_table(result: MagicFormulaResult) -> None:
     """Magic Formula 結果テーブル (上位 N 銘柄の ROC / EY ランキング)。"""
     display_columns = [
@@ -215,15 +255,13 @@ def _display_magic_formula_table(result: MagicFormulaResult) -> None:
         display_columns.append("market_cap")
 
     display_df = result.result[display_columns].copy()
-    display_df["roc"] = display_df["roc"].apply(
-        lambda x: f"{float(x) * 100:.2f}%"
-    )
+    display_df["roc"] = display_df["roc"].apply(_format_decimal_pct)
     display_df["earnings_yield"] = display_df["earnings_yield"].apply(
-        lambda x: f"{float(x) * 100:.2f}%"
+        _format_decimal_pct
     )
     if "market_cap" in display_df.columns:
         display_df["market_cap"] = display_df["market_cap"].apply(
-            lambda x: f"${float(x) / 1e9:,.1f}B" if x is not None else "—"
+            _format_market_cap_usd_billion
         )
 
     rename_map = {
@@ -268,12 +306,10 @@ def _display_recommendation_cards(
         mf_display = {
             "magic_formula_score": mf_dict.get("magic_formula_score", "—"),
             "roc": (
-                f"{float(mf_dict['roc']) * 100:.2f}%"
-                if "roc" in mf_dict
-                else "—"
+                _format_decimal_pct(mf_dict["roc"]) if "roc" in mf_dict else "—"
             ),
             "earnings_yield": (
-                f"{float(mf_dict['earnings_yield']) * 100:.2f}%"
+                _format_decimal_pct(mf_dict["earnings_yield"])
                 if "earnings_yield" in mf_dict
                 else "—"
             ),

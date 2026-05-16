@@ -411,6 +411,9 @@ def _compute_cagr_from_yearly(
     """yearly dict (date 文字列キー) から N 年 CAGR を計算。
 
     成長率 = (latest / past) ** (1/N) - 1。past または latest が 0 / 負 / 欠損なら None。
+
+    CLAUDE.md §9.1 に従い float を経由せず Decimal の ``ln`` / ``exp`` で計算する。
+    ``exp(ln(ratio) / years) - 1`` は数学的に ``ratio ** (1/years) - 1`` と等価。
     """
     if not yearly:
         return None
@@ -421,10 +424,9 @@ def _compute_cagr_from_yearly(
     past = _to_decimal_or_none(yearly[sorted_keys[-(years + 1)]].get(field))
     if latest is None or past is None or past <= 0 or latest <= 0:
         return None
-    # CAGR = (latest/past)^(1/years) - 1
-    ratio = float(latest) / float(past)
-    cagr = ratio ** (1.0 / years) - 1.0
-    return Decimal(str(round(cagr, 6)))
+    ratio = latest / past
+    cagr = (ratio.ln() / Decimal(years)).exp() - Decimal(1)
+    return cagr.quantize(Decimal("0.000001"))
 
 
 # ---------------------------------------------------------------------------

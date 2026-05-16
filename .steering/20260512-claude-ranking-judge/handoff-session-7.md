@@ -279,13 +279,28 @@ handoff-session-6 §5 の持ち越し課題から Phase 5.5 で解消したも�
 
 ### 4.1 §9.1 違反一括 fix (P-HIGH-1 + P-MEDIUM-1 + 既存課題)
 
-- `_screener_compute.py:417` `_compute_cagr_from_yearly` で `float(latest) / float(past)` 経由 CAGR
-- `_screener_display.py:220-227` `_display_magic_formula_table` で `float(x) * 100` パーセント化
-- 旧 02_screener.py 由来の他箇所も全件 Decimal 化
+**Phase 6.1 (Session 8) で P-HIGH-1 + P-MEDIUM-1 は解消**:
 
-### 4.2 current_price USD/JPY 単位系不整合 (C-HIGH-2、新規)
+- ✅ `_screener_compute.py:_compute_cagr_from_yearly` を ``Decimal.ln()`` + ``Decimal.exp()`` で書き直し（``exp(ln(ratio)/N) - 1`` で ``ratio**(1/N) - 1`` と等価精度）
+- ✅ `_screener_display.py:_display_magic_formula_table` で float 経由を排除。``_format_decimal_pct`` / ``_format_market_cap_usd_billion`` ヘルパーを新規追加
+- ✅ 単体テスト 22 件追加 (`tests/unit/dashboard/views/test_screener_compute_cagr.py` + `test_screener_display_format.py`)
 
-`_screener_compute.py:614-625` で `MarketCapitalization` (USD) ÷ `SharesOutstanding` を `current_price_jpy` に渡している。東証 (TO) モード時、USD ベースの market cap ÷ shares が JPY 建て価格として Composite Score Income/Value 軸に流れる。Phase 3.2 で実価格取得時に解消、または暫定で USD→JPY 換算レート (`Decimal("150")` 等) を掛ける。
+**Phase 6 残り**: 旧 02_screener.py 由来の他箇所の Decimal 化（grep ベースで洗い出し）。
+
+### 4.2 ~~current_price USD/JPY 単位系不整合 (C-HIGH-2)~~ → **誤検知と判明 (Session 8)**
+
+> ⚠️ **誤検知**: handoff-session-7 (Session 7) で 2 reviewer が指摘した内容を Session 8 で検証したところ、**実害なし**と判明。`code-reviewer` / `python-reviewer` が yfinance の通貨ローカライズ挙動を誤解した誤検知だった。
+
+**検証結果** (Session 8):
+
+1. データソースは **yfinance** (`_screener_compute.py:619` `yfinance_client.get_fundamentals(...)`)
+2. yfinance の `info.marketCap` は **ティッカー suffix で局所通貨を返す** 仕様:
+   - `AAPL` → `marketCap` は **USD**
+   - `7203.T` → `marketCap` は **JPY**
+3. すべての利用箇所が**比率計算** (`配当/価格`、`自社株買い/時価総額`、`時価総額/負債総額` 等) → **通貨単位は cancel out**
+4. 株主優待 (`yutai_value_jpy`) のみ JP 専用絶対値だが、US ティッカーでは本番データに値が入らないので無害
+
+**残課題（Phase 6 後半送り）**: フィールド名 `_jpy` 接尾辞の実態との乖離（米国モードで実態は USD）。将来 universe-wide な絶対値比較を追加した時にバグ温床になる懸念。リネーム（`_jpy` → `_local`）の影響範囲は CompositeScoreInputs 全フィールドに及ぶため、独立したリファクタタスクとして実施推奨。
 
 ### 4.3 yfinance df.attrs Provenance 未実装 (P-MEDIUM-3、新規)
 
