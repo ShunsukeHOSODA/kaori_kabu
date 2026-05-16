@@ -34,6 +34,7 @@ import pandas as pd
 import streamlit as st
 
 from src.analysis._adapters import magic_formula_result_to_per_ticker_dict
+from src.analysis._sonnet_model_resolver import resolve_sonnet_model_version
 from src.analysis.composite import (
     CompositeScoreInputs,
     GrowthSubScoreInputs,
@@ -79,6 +80,35 @@ from src.strategies.kelly import KellyParams, build_kelly_recommendation
 # ---------------------------------------------------------------------------
 # ティッカー入力 / ユニバース取得
 # ---------------------------------------------------------------------------
+
+
+@st.cache_resource(show_spinner=False)
+def _resolved_sonnet_model_version() -> str:
+    """Phase 5.5.3: Sonnet ``model_version`` を起動時に動的解決し session 全体で共有。
+
+    handoff-session-6 §5.7 / C-L-1 の持ち越し課題解消。
+
+    挙動:
+        - ``ANTHROPIC_API_KEY`` 未設定 → ``settings.sonnet_model_version`` をそのまま返す。
+        - 設定値が prefix のみ (``claude-sonnet-4-6``) → ``anthropic.models.list()`` で
+          ``claude-sonnet-4-6-YYYYMMDD`` 形式の最新スナップショットを取得。
+        - 設定値が日付付き完全 ID (``claude-sonnet-4-6-20250514``) → prefix としては
+          いずれにもマッチしないため fallback (= 同じ値) が返り override が保持される。
+        - API 失敗 → fallback (= settings 値) を返す (PRD §FR5 多段縮退)。
+    """
+    if not settings.anthropic_api_key:
+        return settings.sonnet_model_version
+    import anthropic  # noqa: PLC0415 — オプショナル機能の lazy import
+
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    except Exception:  # noqa: BLE001 — 初期化失敗時は settings 値で続行
+        return settings.sonnet_model_version
+    return resolve_sonnet_model_version(
+        client,
+        prefix=settings.sonnet_model_version,
+        fallback=settings.sonnet_model_version,
+    )
 
 
 def parse_tickers(raw: str) -> list[str]:
@@ -822,7 +852,7 @@ def _run_sonnet_stage(
                 anthropic_client=anthropic_client,
                 cache_dir=Path(settings.cache_dir) / "sonnet_ranking",
                 model=settings.sonnet_model,
-                model_version=settings.sonnet_model_version,
+                model_version=_resolved_sonnet_model_version(),
                 ttl_sec=settings.ranking_cache_ttl_sec,
             )
             return ranking_results, signal_bundles
