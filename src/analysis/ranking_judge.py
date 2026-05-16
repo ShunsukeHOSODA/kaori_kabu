@@ -489,31 +489,31 @@ def compute_kelly_multiplier(ranking_score: int) -> Decimal:
     return Decimal("0.0")
 
 
-def compute_mu_for_monte_carlo(bundle: RankingSignalBundle) -> float:
-    """RankingSignalBundle の 12 ヶ月モメンタムを Monte Carlo の ``mu`` 引数に変換。
+def compute_mu_for_monte_carlo(momentum_12m: Decimal | None) -> float:
+    """12 ヶ月モメンタム (年率パーセント) を Monte Carlo の ``mu`` 引数に変換。
 
-    Stage 3 純粋関数。``RankingSignalBundle`` の owner と同居させることで
-    dashboard 層 → analysis 層への依存方向を正しく保つ
-    (Phase 6.3 §4.1 派生、reviewer HIGH-2 解消)。
+    Stage 3 純粋関数。``apply_regime_confidence`` / ``compute_kelly_multiplier``
+    と同じくスカラー引数 (``Decimal | None``) を受け、Stage 3 関数群の引数粒度
+    一貫性を保つ (Phase 6.3 reviewer 2 視点一致 fix、bundle 全体受けの設計負債解消)。
 
     Args:
-        bundle: ``momentum_12m`` を持つ RankingSignalBundle。
-            ``momentum_12m`` は年率パーセント (例: ``Decimal('12.5')`` = +12.5%)。
+        momentum_12m: 年率パーセント (例: ``Decimal('12.5')`` = +12.5%)。
+            ``RankingSignalBundle.momentum_12m`` から取り出した値を直接渡す。
+            ``None`` の場合は ``0.0`` を返す (ドリフトなしの純 Brownian motion)。
 
     Returns:
         :func:`monte_carlo.simulate_gbm_paths` の ``mu: float`` 引数で使う
-        相対値 (0.125)。``momentum_12m`` が ``None`` の場合は ``0.0`` を返す。
+        相対値 (例: ``Decimal('12.5')`` → ``0.125``)。
 
     Note:
         CLAUDE.md §9.1: Decimal 演算で完結してから、Monte Carlo の
         ``mu: float`` 引数のため最後だけ float 化する。
-        handoff §4.16 で display 層から compute 層へ移管した薄い helper を、
-        Phase 6.3 で更に analysis 層 (本モジュール) へ移管した
-        (handoff §2.4、reviewer HIGH-2)。
+        移管経緯: Phase 5.4.2 display 層 → Phase 6.2 compute 層 (handoff §4.16)
+        → Phase 6.3 analysis 層 (handoff §2.4、reviewer HIGH-2)。
     """
-    if bundle.momentum_12m is None:
+    if momentum_12m is None:
         return 0.0
-    return float(bundle.momentum_12m / Decimal("100"))
+    return float(momentum_12m / Decimal("100"))
 
 
 # ---------------------------------------------------------------------------
@@ -726,13 +726,16 @@ FallbackReason = Literal[
 
 # fallback_reason enum → 人間可読日本語ラベル (handoff §4.6 / Phase 6.3 §4.2 派生)。
 # UI には抽象化された enum 値ではなく日本語表記を出す。
-# ``Final[dict[FallbackReason, str]]`` で型レベル網羅性を強制
-# （新 Literal 値を追加した際 mypy/pyright が key 未登録を検出）。
 # Phase 6.3 で ``widgets/ranking_card.py`` から本モジュールに移管し、
 # FallbackReason Literal の真理値と同じ場所に集約することで、
 # ``_screener_compute.py`` / ``ranking_card.py`` の両 consumer が
 # 単一情報源を共有する（循環 import 回避、handoff §2.3）。
-_FALLBACK_REASON_LABELS: Final[dict[FallbackReason, str]] = {
+#
+# 網羅性保証: mypy/pyright は dict literal の key 数を Literal 値と
+# 構造的に照合しないため、``tests/unit/analysis/test_ranking_judge.py``
+# の ``TestFallbackReasonLabelsCoverage`` で ``typing.get_args`` ベースの
+# 集合一致を pytest レベルで保証する (Phase 6.3 reviewer LOW-1 fix)。
+FALLBACK_REASON_LABELS: Final[dict[FallbackReason, str]] = {
     "auth_error": "認証エラー (API キー失効の可能性)",
     "rate_limit": "レート制限 (短時間に過剰リクエスト)",
     "api_status_error": "API ステータスエラー",
@@ -743,7 +746,7 @@ _FALLBACK_REASON_LABELS: Final[dict[FallbackReason, str]] = {
 }
 
 
-def _classify_api_exception(exc: BaseException) -> FallbackReason:
+def classify_api_exception(exc: BaseException) -> FallbackReason:
     """Anthropic SDK / Python 標準例外を閉じた enum 値に分類する (handoff §4.6)。
 
     Args:
@@ -796,7 +799,7 @@ def _build_fallback_result(
             ``"network_error"`` / ``"unknown_api_error"`` / ``"schema_error"`` /
             ``"forbidden_pattern_detected"``）を指定する。
             Phase 6.2 (handoff §4.6) 前の ``"api_error: <ExcClass>"`` 形式は
-            ``_classify_api_exception`` 経由で抽象 enum 値に変換するため廃止。
+            ``classify_api_exception`` 経由で抽象 enum 値に変換するため廃止。
         started_at: 元の呼び出し開始時刻（UTC、Provenance 用）。
 
     Returns:
@@ -865,7 +868,7 @@ def rank_single_with_claude(
     3 つの recovery path（PRD §FR5 多段縮退）で `RankingResult` を必ず返却:
 
     1. **API 例外** (network / 401 / 429 / 503 / SDK error / JSON 抽出失敗):
-       ``_classify_api_exception(exc)`` で抽象 enum 値
+       ``classify_api_exception(exc)`` で抽象 enum 値
        （``"auth_error"`` / ``"rate_limit"`` / ``"api_status_error"`` /
        ``"network_error"`` / ``"unknown_api_error"``）に変換して
        ``_build_fallback_result`` に渡す。SDK 例外クラス名は
@@ -916,7 +919,7 @@ def rank_single_with_claude(
         text = response.content[0].text
         parsed = extract_json(text, context="ranking judge response")
     except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退、Anthropic SDK の多様な例外型を一括受け
-        reason = _classify_api_exception(exc)
+        reason = classify_api_exception(exc)
         logger.warning(
             "Sonnet API call failed: ticker=%s reason=%s exc_type=%s exc_msg=%s",
             bundle.ticker,

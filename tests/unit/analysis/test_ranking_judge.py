@@ -830,7 +830,7 @@ class TestRankSingleWithClaude:
         Phase 6.2 (handoff §4.6) で fallback_reason は閉じた enum 値
         (``auth_error`` / ``rate_limit`` / ``unknown_api_error`` 等) のみを
         格納するよう変更。SDK 例外クラス名は ``logger.warning`` で内部記録され、
-        UI には漏れない。plain ``Exception`` は ``_classify_api_exception`` で
+        UI には漏れない。plain ``Exception`` は ``classify_api_exception`` で
         ``"unknown_api_error"`` に分類される。
         """
         from unittest.mock import MagicMock
@@ -929,7 +929,7 @@ class TestRankSingleWithClaude:
         assert result.fallback_reason == "schema_error"
 
     @pytest.mark.unit
-    def test_classify_api_exception_auth_error(self) -> None:
+    def testclassify_api_exception_auth_error(self) -> None:
         """anthropic.AuthenticationError → "auth_error" 分類 (handoff §4.6)。
 
         anthropic SDK の Exception 階層は ``__new__`` を override しているため
@@ -938,33 +938,33 @@ class TestRankSingleWithClaude:
         """
         import anthropic
 
-        from src.analysis.ranking_judge import _classify_api_exception
+        from src.analysis.ranking_judge import classify_api_exception
 
         class _AuthStub(anthropic.AuthenticationError):
             def __init__(self) -> None:  # noqa: D401
                 pass
 
-        assert _classify_api_exception(_AuthStub()) == "auth_error"
+        assert classify_api_exception(_AuthStub()) == "auth_error"
 
     @pytest.mark.unit
-    def test_classify_api_exception_rate_limit(self) -> None:
+    def testclassify_api_exception_rate_limit(self) -> None:
         """anthropic.RateLimitError → "rate_limit" 分類 (handoff §4.6)。"""
         import anthropic
 
-        from src.analysis.ranking_judge import _classify_api_exception
+        from src.analysis.ranking_judge import classify_api_exception
 
         class _RateLimitStub(anthropic.RateLimitError):
             def __init__(self) -> None:
                 pass
 
-        assert _classify_api_exception(_RateLimitStub()) == "rate_limit"
+        assert classify_api_exception(_RateLimitStub()) == "rate_limit"
 
     @pytest.mark.unit
-    def test_classify_api_exception_api_status_error(self) -> None:
+    def testclassify_api_exception_api_status_error(self) -> None:
         """anthropic.APIStatusError (Auth/RateLimit 以外) → "api_status_error"。"""
         import anthropic
 
-        from src.analysis.ranking_judge import _classify_api_exception
+        from src.analysis.ranking_judge import classify_api_exception
 
         # AuthenticationError / RateLimitError のサブクラスではない APIStatusError
         # 派生クラスを使用 (e.g., InternalServerError)
@@ -972,26 +972,26 @@ class TestRankSingleWithClaude:
             def __init__(self) -> None:
                 pass
 
-        assert _classify_api_exception(_ServerErrorStub()) == "api_status_error"
+        assert classify_api_exception(_ServerErrorStub()) == "api_status_error"
 
     @pytest.mark.unit
-    def test_classify_api_exception_network_error(self) -> None:
+    def testclassify_api_exception_network_error(self) -> None:
         """ConnectionError / TimeoutError → "network_error" 分類 (handoff §4.6)。"""
-        from src.analysis.ranking_judge import _classify_api_exception
+        from src.analysis.ranking_judge import classify_api_exception
 
-        assert _classify_api_exception(ConnectionError()) == "network_error"
-        assert _classify_api_exception(TimeoutError()) == "network_error"
+        assert classify_api_exception(ConnectionError()) == "network_error"
+        assert classify_api_exception(TimeoutError()) == "network_error"
 
     @pytest.mark.unit
-    def test_classify_api_exception_unknown_api_error(self) -> None:
+    def testclassify_api_exception_unknown_api_error(self) -> None:
         """plain Exception → "unknown_api_error" 分類 (handoff §4.6)。
 
         UI には SDK exception クラス名が漏れず、閉じた enum 値だけが渡る。
         """
-        from src.analysis.ranking_judge import _classify_api_exception
+        from src.analysis.ranking_judge import classify_api_exception
 
-        assert _classify_api_exception(Exception("any")) == "unknown_api_error"
-        assert _classify_api_exception(ValueError("v")) == "unknown_api_error"
+        assert classify_api_exception(Exception("any")) == "unknown_api_error"
+        assert classify_api_exception(ValueError("v")) == "unknown_api_error"
 
     @pytest.mark.unit
     def test_bundle_hash_決定論性(self, make_bundle: Any) -> None:
@@ -1007,9 +1007,9 @@ class TestRankSingleWithClaude:
 
 
 class TestFallbackReasonLabelsCoverage:
-    """Phase 6.3 §4.2 派生 (reviewer LOW-1): _FALLBACK_REASON_LABELS の網羅性検証。
+    """Phase 6.3 §4.2 派生 (reviewer LOW-1): FALLBACK_REASON_LABELS の網羅性検証。
 
-    ``FallbackReason`` Literal の全値が ``_FALLBACK_REASON_LABELS`` のキーに
+    ``FallbackReason`` Literal の全値が ``FALLBACK_REASON_LABELS`` のキーに
     含まれることを ``typing.get_args`` で構造的に検証する。新しい Literal 値を
     追加した際は本テストが落ちて、UI ラベル追加忘れを機械的に検出する
     （handoff §2.3「両 consumer の単一情報源」規律の保険）。
@@ -1020,30 +1020,30 @@ class TestFallbackReasonLabelsCoverage:
         from typing import get_args
 
         from src.analysis.ranking_judge import (
-            _FALLBACK_REASON_LABELS,
+            FALLBACK_REASON_LABELS,
             FallbackReason,
         )
 
         literal_values = set(get_args(FallbackReason))
-        label_keys = set(_FALLBACK_REASON_LABELS.keys())
+        label_keys = set(FALLBACK_REASON_LABELS.keys())
         missing = literal_values - label_keys
         extra = label_keys - literal_values
         assert not missing, (
-            f"FallbackReason Literal 値が _FALLBACK_REASON_LABELS に未登録: "
+            f"FallbackReason Literal 値が FALLBACK_REASON_LABELS に未登録: "
             f"{sorted(missing)}"
         )
         assert not extra, (
-            f"_FALLBACK_REASON_LABELS に Literal 値以外のキーが混入: "
+            f"FALLBACK_REASON_LABELS に Literal 値以外のキーが混入: "
             f"{sorted(extra)}"
         )
 
     @pytest.mark.unit
     def test_全ラベルが非空文字列(self) -> None:
         """UI 表示で「空ラベル」が出るのを防ぐ静的ガード。"""
-        from src.analysis.ranking_judge import _FALLBACK_REASON_LABELS
+        from src.analysis.ranking_judge import FALLBACK_REASON_LABELS
 
-        for key, label in _FALLBACK_REASON_LABELS.items():
-            assert label.strip(), f"_FALLBACK_REASON_LABELS[{key!r}] が空文字列"
+        for key, label in FALLBACK_REASON_LABELS.items():
+            assert label.strip(), f"FALLBACK_REASON_LABELS[{key!r}] が空文字列"
 
 
 class TestRankWithClaudeBatch:

@@ -25,7 +25,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.analysis.ranking_judge import (
-    _FALLBACK_REASON_LABELS,
+    FALLBACK_REASON_LABELS,
     RankingResult,
     RankingSignalBundle,
 )
@@ -54,7 +54,7 @@ _DISCLAIMER: Final[str] = (
 
 # fallback_reason enum → 人間可読日本語ラベル mapping は Phase 6.3 で
 # ``src/analysis/ranking_judge.py`` に移管した（handoff §4.6 派生、§2.3）。
-# 本モジュールは単一情報源として ``_FALLBACK_REASON_LABELS`` を import する。
+# 本モジュールは単一情報源として ``FALLBACK_REASON_LABELS`` を import する。
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def render_ranking_card(
         # 1. 縮退時の警告 + ヘッダー
         # ----------------------------------------------------------------
         if ranking_result.fallback_reason is not None:
-            fallback_label = _FALLBACK_REASON_LABELS.get(
+            fallback_label = FALLBACK_REASON_LABELS.get(
                 ranking_result.fallback_reason, ranking_result.fallback_reason
             )
             st.warning(

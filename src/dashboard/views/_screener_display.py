@@ -477,8 +477,10 @@ def _display_claude_section(
     ):
         st.markdown(f"### #{rank} — {bundle.ticker}")
         # Monte Carlo: momentum_12m を mu の近似値として使用 (年率)。
-        # 計算は compute 層の compute_mu_for_monte_carlo に集約 (handoff §4.16)。
-        mu_value = compute_mu_for_monte_carlo(bundle)
+        # 計算は analysis 層の compute_mu_for_monte_carlo に集約
+        # (Phase 6.3: bundle 全体ではなくスカラー momentum_12m を渡す形に
+        # シグネチャ統一、Stage 3 純粋関数群の引数粒度一貫性、reviewer fix)。
+        mu_value = compute_mu_for_monte_carlo(bundle.momentum_12m)
         # TODO(Phase 6): sigma を realized vol、start_price を実価格に置換 (handoff §5.4)
         paths = simulate_gbm_paths(
             start_price=100.0,  # 相対価格 (基準 100)

@@ -55,10 +55,10 @@ from src.analysis.magic_formula import (
     screen_magic_formula_with_provenance,
 )
 from src.analysis.ranking_judge import (
-    _FALLBACK_REASON_LABELS,
+    FALLBACK_REASON_LABELS,
     RankingResult,
     RankingSignalBundle,
-    _classify_api_exception,
+    classify_api_exception,
     rank_with_claude_batch,
 )
 from src.analysis.sentiment import (
@@ -878,12 +878,12 @@ def _run_sonnet_stage(
             return ranking_results, signal_bundles
         except Exception as exc:  # noqa: BLE001 — PRD §FR5 多段縮退
             # Phase 6.3 §4.3 派生 (handoff §4.3):
-            # _classify_api_exception + _FALLBACK_REASON_LABELS で
+            # classify_api_exception + FALLBACK_REASON_LABELS で
             # SDK 例外クラス名 / status_code の UI 漏洩を抽象化。
             # ranking_judge.rank_single_with_claude 内部の path 1 fallback と
             # 同じ抽象化規律を、バッチ全体失敗の外側 catch にも適用する。
             # 詳細な例外型と status_code は logger.warning で内部記録。
-            reason = _classify_api_exception(exc)
+            reason = classify_api_exception(exc)
             status_code = getattr(exc, "status_code", None)
             logger.warning(
                 "Claude 判定全体失敗: reason=%s exc_type=%s status_code=%s exc_msg=%s",
@@ -892,7 +892,7 @@ def _run_sonnet_stage(
                 status_code,
                 str(exc),
             )
-            label = _FALLBACK_REASON_LABELS.get(reason, reason)
+            label = FALLBACK_REASON_LABELS.get(reason, reason)
             st.error(
                 f"🚨 Claude 判定全体失敗 ({label})、"
                 "Composite ランキングのみ表示します。"
