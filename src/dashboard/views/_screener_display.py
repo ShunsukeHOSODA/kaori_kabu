@@ -37,7 +37,11 @@ from src.analysis.monte_carlo import (
 from src.analysis.ranking_judge import RankingResult, RankingSignalBundle
 from src.analysis.sentiment import SentimentResult
 from src.config.settings import settings
-from src.dashboard.views._screener_session import ScreeningSession
+from src.dashboard.views._screener_session import (
+    DEFAULT_NEWS_LENSES,
+    TOP_PICKS_FOR_NEWS,
+    ScreeningSession,
+)
 from src.dashboard.widgets.ranking_card import render_ranking_card
 from src.data.famous_holdings import get_famous_owners, render_owner_badges
 from src.data.news import MarketContext
@@ -47,11 +51,6 @@ from src.ui.components import (
     format_sentiment_emoji,
     format_sentiment_label,
 )
-
-# 推奨根拠カードに自動分析する銘柄数（待ち時間を許容、視界に収まる粒度のベスト）。
-# _screener_compute 側でも参照するため公開 (TOP_PICKS_FOR_NEWS / DEFAULT_NEWS_LENSES)。
-TOP_PICKS_FOR_NEWS: int = 5
-DEFAULT_NEWS_LENSES: tuple[str, ...] = ("Buffett_Munger", "Burry")
 
 
 # ---------------------------------------------------------------------------

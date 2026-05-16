@@ -25,6 +25,7 @@ PRD §FR5 多段縮退規約 (Phase 5.4.2 で実装、本 Phase 5.5.0 で挙動�
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -32,6 +33,8 @@ from typing import Any, Literal, cast
 import httpx
 import pandas as pd
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 from src.analysis._adapters import magic_formula_result_to_per_ticker_dict
 from src.analysis._sonnet_model_resolver import resolve_sonnet_model_version
@@ -62,11 +65,9 @@ from src.analysis.sentiment import (
 )
 from src.analysis.signal_aggregator import aggregate_signals_for_universe
 from src.config.settings import settings
-from src.dashboard.views._screener_display import (
+from src.dashboard.views._screener_session import (
     DEFAULT_NEWS_LENSES,
     TOP_PICKS_FOR_NEWS,
-)
-from src.dashboard.views._screener_session import (
     RecommendationAnalysis,
     ScreeningSession,
 )
@@ -95,6 +96,13 @@ def _resolved_sonnet_model_version() -> str:
         - 設定値が日付付き完全 ID (``claude-sonnet-4-6-20250514``) → prefix としては
           いずれにもマッチしないため fallback (= 同じ値) が返り override が保持される。
         - API 失敗 → fallback (= settings 値) を返す (PRD §FR5 多段縮退)。
+
+    キャッシュライフタイム:
+        ``@st.cache_resource`` は Streamlit プロセスライフタイムで cache される。
+        **アプリ再起動で更新される**ため、Anthropic が新スナップショットを追加しても
+        プロセスが生存中は古い解決結果のまま固定される。長時間稼働時は
+        ``.env`` の ``SONNET_MODEL_VERSION`` を明示 override で固定する運用が確実
+        (Phase 5.5.6 P-LOW-1 / C-MEDIUM-2 一致指摘)。
     """
     if not settings.anthropic_api_key:
         return settings.sonnet_model_version
@@ -456,7 +464,15 @@ def analyze_recommendation_for_ticker(
         sentiment = analyze_sentiment(
             combined, ticker=ticker, anthropic_client=anthropic_client
         )
-    except Exception:  # noqa: BLE001 — UI 側で安全に失敗表示
+    except Exception as exc:  # noqa: BLE001 — UI 側で安全に失敗表示
+        # Phase 5.5.6 C-LOW-2: observability のため logger.warning を追加
+        # (UI 側ではカードに「分析失敗」表示、debug 時は log で原因追跡)
+        logger.warning(
+            "analyze_recommendation_for_ticker failed for %s: %s: %s",
+            ticker,
+            type(exc).__name__,
+            exc,
+        )
         return None
     return market_context, sentiment, combined
 

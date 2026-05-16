@@ -30,11 +30,11 @@ from src.dashboard.views._screener_compute import (
     parse_tickers,
     run_screening_pipeline,
 )
-from src.dashboard.views._screener_display import (
+from src.dashboard.views._screener_display import render_screening_results
+from src.dashboard.views._screener_session import (
     TOP_PICKS_FOR_NEWS,
-    render_screening_results,
+    ScreeningSession,
 )
-from src.dashboard.views._screener_session import ScreeningSession
 from src.data.cache import ParquetCache
 from src.data.eodhd import EODHDClient
 from src.data.financedatabase_client import get_jp_universe
@@ -124,8 +124,12 @@ def get_news_client() -> NewsClient | None:
 
 
 @st.cache_resource
-def get_anthropic_client():  # noqa: ANN201 — anthropic.Anthropic を返す
-    """``ANTHROPIC_API_KEY`` があるときだけ Anthropic クライアント生成。"""
+def get_anthropic_client() -> "anthropic.Anthropic | None":
+    """``ANTHROPIC_API_KEY`` があるときだけ Anthropic クライアント生成。
+
+    戻り値は文字列アノテーションで遅延評価。``anthropic`` パッケージは
+    オプショナル依存なので関数内で lazy import する (CLAUDE.md §9 + P-HIGH-2)。
+    """
     if not settings.anthropic_api_key:
         return None
     import anthropic  # noqa: PLC0415 — オプショナル機能の lazy import

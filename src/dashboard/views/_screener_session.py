@@ -42,6 +42,15 @@ RecommendationAnalysis = tuple[
     tuple[MarketContext, SentimentResult, Any] | None,
 ]
 
+# ---------------------------------------------------------------------------
+# 描画・計算双方が参照する共有定数 (Phase 5.5.6 C-HIGH-1 解消)
+# ---------------------------------------------------------------------------
+# 推奨根拠カードに自動分析する銘柄数（待ち時間を許容、視界に収まる粒度のベスト）。
+# _screener_compute (Phase 2 分析計算) と _screener_display (サブヘッダ表示) +
+# 02_screener.py (サイドバー UI のヘルプ文言) の 3 箇所から参照される共通定数。
+TOP_PICKS_FOR_NEWS: int = 5
+DEFAULT_NEWS_LENSES: tuple[str, ...] = ("Buffett_Munger", "Burry")
+
 
 @dataclass(frozen=True, slots=True)
 class ScreeningSession:

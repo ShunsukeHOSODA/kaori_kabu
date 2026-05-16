@@ -31,6 +31,7 @@ def _make_client(model_ids: list[str]) -> MagicMock:
     return client
 
 
+@pytest.mark.unit
 class TestResolveSonnetModelVersion:
     """``resolve_sonnet_model_version`` の挙動を 6 ケースで検証する。"""
 
