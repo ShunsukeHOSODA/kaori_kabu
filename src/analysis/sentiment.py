@@ -186,7 +186,7 @@ def analyze_sentiment(
     news_df: pd.DataFrame,
     ticker: str,
     *,
-    anthropic_client: Any,
+    anthropic_client: AnthropicLike,
     model: str = DEFAULT_MODEL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> SentimentResult:

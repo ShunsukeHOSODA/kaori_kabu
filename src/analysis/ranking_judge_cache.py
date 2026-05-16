@@ -149,7 +149,7 @@ def _write_cache(cache_path: Path, result: RankingResult) -> None:
 def rank_with_claude_batch(
     bundles: list[RankingSignalBundle],
     *,
-    anthropic_client: Any,
+    anthropic_client: AnthropicLike,
     cache_dir: Path,
     model: str = DEFAULT_MODEL,
     model_version: str = DEFAULT_MODEL_VERSION,

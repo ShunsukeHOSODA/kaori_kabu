@@ -37,6 +37,7 @@ import streamlit as st
 logger = logging.getLogger(__name__)
 
 from src.analysis._adapters import magic_formula_result_to_per_ticker_dict
+from src.analysis._anthropic_types import AnthropicLike
 from src.analysis._sonnet_model_resolver import resolve_sonnet_model_version
 from src.analysis.composite import (
     CompositeScoreInputs,
@@ -440,7 +441,7 @@ def analyze_recommendation_for_ticker(
     ticker: str,
     *,
     news_client: NewsClient,
-    anthropic_client: Any,
+    anthropic_client: AnthropicLike,
     lenses: tuple[str, ...],
 ) -> tuple[MarketContext, SentimentResult, pd.DataFrame] | None:
     """単一銘柄について 4 系統 + レンズ + センチメント分析を実行。
@@ -501,7 +502,7 @@ def run_screening_pipeline(
     eodhd_client: EODHDClient | None,
     yfinance_client: YFinanceClient,
     news_client: NewsClient | None,
-    anthropic_client: Any,
+    anthropic_client: AnthropicLike | None,
 ) -> ScreeningSession:
     """run_button 経路の計算パイプライン全体。
 
@@ -763,7 +764,7 @@ def _run_sonnet_stage(
     sentiment_results_dict: dict[str, SentimentResult],
     momentum_results_dict: dict[str, dict[str, Decimal]],
     exchange: str,
-    anthropic_client: Any,
+    anthropic_client: AnthropicLike | None,
 ) -> tuple[list[RankingResult] | None, list[RankingSignalBundle] | None]:
     """Stage 2 Sonnet 連携の独立関数。
 

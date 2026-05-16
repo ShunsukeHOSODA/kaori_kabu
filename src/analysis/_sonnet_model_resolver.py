@@ -22,7 +22,9 @@ override 値が cache key としてそのまま使われる (CLAUDE.md §9.8 Pro
 from __future__ import annotations
 
 import logging
-from typing import Any, Final
+from typing import Final
+
+from src.analysis._anthropic_types import AnthropicLike
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ DEFAULT_PREFIX: Final[str] = "claude-sonnet-4-6"
 
 
 def resolve_sonnet_model_version(
-    anthropic_client: Any,
+    anthropic_client: AnthropicLike | None,
     *,
     prefix: str = DEFAULT_PREFIX,
     fallback: str | None = None,
