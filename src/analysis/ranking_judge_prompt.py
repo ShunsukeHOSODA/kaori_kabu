@@ -46,7 +46,11 @@ from src.analysis.ranking_judge_schema import RankingSignalBundle
 # 利用されている履歴があるため re-export 対象に含めて後方互換性を維持する。
 # (Phase 6.3 _FALLBACK_REASON_LABELS 公開規律: cross-module import される
 #  シンボルは underscore 削除推奨だが、本フェーズでは scope 制限のため命名は
-#  そのままで __all__ にのみ含める。命名整理は Phase 6.4.D 以降の検討事項。)
+#  そのままで __all__ にのみ含める。)
+# TODO(Phase 6.4.D): _format_* / _compute_bundle_hash の underscore 削除を
+# orchestrator スリム化と合わせて一括対応 (handoff §4.1 + Phase 6.4.B
+# code-reviewer MEDIUM-2 起票)。`from module import *` セマンティクスで
+# private prefix が __all__ 明示で上書きされる現状の非対称解消が目的。
 __all__ = [
     "SYSTEM_PROMPT",
     "build_ranking_user_message",
@@ -271,6 +275,12 @@ def build_ranking_user_message(bundle: RankingSignalBundle) -> str:
     ey = _format_optional(bundle.earnings_yield_pct)
     mom_1m = _format_optional(bundle.momentum_1m)
     mom_12m = _format_optional(bundle.momentum_12m)
+    # Decimal 一貫処理規律 (Phase 6.4.B reviewer python-r MEDIUM fix):
+    # sentiment_score / sentiment_confidence は schema 上 None 不可だが、
+    # ``_format_optional`` 経由に統一して module 内で Decimal 系フィールドの
+    # str 化窓口を単一化する。`str(Decimal)` と同等出力、byte-identical 維持。
+    sent_score = _format_optional(bundle.sentiment_score)
+    sent_conf = _format_optional(bundle.sentiment_confidence)
 
     sub = bundle.sub_scores
     bull_p = bundle.regime_state_probs.get("Bull", Decimal("0"))
@@ -296,8 +306,8 @@ def build_ranking_user_message(bundle: RankingSignalBundle) -> str:
         f"### モメンタム\n"
         f"- 1m: {mom_1m} / 12m: {mom_12m}\n\n"
         f"### ニュースセンチメント (Haiku 4.5 既存)\n"
-        f"- Score: {bundle.sentiment_score} / "
-        f"Confidence: {bundle.sentiment_confidence}\n"
+        f"- Score: {sent_score} / "
+        f"Confidence: {sent_conf}\n"
         f"- テーマ: {themes_str}\n\n"
         f"### Polymarket マクロ織り込み確率\n"
         f"{macro_md}\n\n"
